@@ -241,6 +241,8 @@ async function processAgentMessage(params: {
     // 处理媒体文件
     const attachments: any[] = []; // TODO: define specific type
     let finalContent = content;
+    let mediaPath: string | undefined;
+    let mediaType: string | undefined;
 
     if (["image", "voice", "video", "file"].includes(msgType)) {
         const mediaId = extractMediaId(msg);
@@ -248,7 +250,7 @@ async function processAgentMessage(params: {
             try {
                 log?.(`[wecom-agent] downloading media: ${mediaId} (${msgType})`);
                 const { buffer, contentType } = await downloadMedia({ agent, mediaId });
-                
+
                 // 推断文件名后缀
                 const extMap: Record<string, string> = {
                     "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif",
@@ -267,6 +269,8 @@ async function processAgentMessage(params: {
                 );
 
                 log?.(`[wecom-agent] media saved to: ${saved.path}`);
+                mediaPath = saved.path;
+                mediaType = contentType;
 
                 // 构建附件
                 attachments.push({
@@ -330,6 +334,9 @@ async function processAgentMessage(params: {
         OriginatingChannel: "wecom",
         OriginatingTo: `wecom:${peerId}`,
         CommandAuthorized: true, // 已通过 WeCom 签名验证
+        MediaPath: mediaPath,
+        MediaType: mediaType,
+        MediaUrl: mediaPath,
     });
 
     // 记录会话

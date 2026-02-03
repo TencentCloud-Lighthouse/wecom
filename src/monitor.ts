@@ -13,8 +13,9 @@ import { getWecomRuntime } from "./runtime.js";
 import { decryptWecomMedia, decryptWecomMediaWithHttp } from "./media.js";
 import { WEBHOOK_PATHS } from "./types/constants.js";
 import { handleAgentWebhook } from "./agent/index.js";
-import { resolveWecomEgressProxyUrl } from "./config/index.js";
+import { resolveWecomAccounts, resolveWecomEgressProxyUrl } from "./config/index.js";
 import { wecomFetch } from "./http.js";
+import { sendText as sendAgentText, sendMedia as sendAgentMedia, uploadMedia } from "./agent/api-client.js";
 import axios from "axios";
 
 /**
@@ -49,6 +50,9 @@ const agentTargets = new Map<string, AgentWebhookTarget>();
 const pendingInbounds = new Map<string, PendingInbound>();
 
 const STREAM_MAX_BYTES = LIMITS.STREAM_MAX_BYTES;
+const STREAM_MAX_DM_BYTES = 200_000;
+const BOT_WINDOW_MS = 6 * 60 * 1000;
+const BOT_SWITCH_MARGIN_MS = 30 * 1000;
 // REQUEST_TIMEOUT_MS is available in LIMITS but defined locally in other functions, we can leave it or use LIMITS.REQUEST_TIMEOUT_MS
 // Keeping local variables for now if they are used, or we can replace usages.
 // The constants STREAM_TTL_MS and ACTIVE_REPLY_TTL_MS are internalized in state.ts, so we can remove them here.
@@ -244,6 +248,194 @@ function buildStreamReplyFromState(state: StreamState): { msgtype: "stream"; str
   };
 }
 
+function appendDmContent(state: StreamState, text: string): void {
+  const next = state.dmContent ? `${state.dmContent}\n\n${text}`.trim() : text.trim();
+  state.dmContent = truncateUtf8Bytes(next, STREAM_MAX_DM_BYTES);
+}
+
+function computeTaskKey(target: WecomWebhookTarget, msg: WecomInboundMessage): string | undefined {
+  const msgid = msg.msgid ? String(msg.msgid) : "";
+  if (!msgid) return undefined;
+  const aibotid = String((msg as any).aibotid ?? "unknown").trim() || "unknown";
+  return `bot:${target.account.accountId}:${aibotid}:${msgid}`;
+}
+
+function resolveAgentAccountOrUndefined(cfg: OpenClawConfig): ResolvedAgentAccount | undefined {
+  const agent = resolveWecomAccounts(cfg).agent;
+  return agent?.configured ? agent : undefined;
+}
+
+function buildFallbackPrompt(params: {
+  kind: "media" | "timeout" | "error";
+  agentConfigured: boolean;
+  userId?: string;
+  filename?: string;
+  chatType?: "group" | "direct";
+}): string {
+  const who = params.userId ? `（${params.userId}）` : "";
+  const scope = params.chatType === "group" ? "群聊" : params.chatType === "direct" ? "私聊" : "会话";
+  if (!params.agentConfigured) {
+    return `${scope}中需要通过应用私信发送${params.filename ? `（${params.filename}）` : ""}，但管理员尚未配置企业微信自建应用（Agent）通道。请联系管理员配置后再试。${who}`.trim();
+  }
+  if (params.kind === "media") {
+    return `已生成文件${params.filename ? `（${params.filename}）` : ""}，将通过应用私信发送给你。${who}`.trim();
+  }
+  if (params.kind === "timeout") {
+    return `内容较长，为避免超时，后续内容将通过应用私信发送给你。${who}`.trim();
+  }
+  return `交付出现异常，已尝试通过应用私信发送给你。${who}`.trim();
+}
+
+async function sendBotFallbackPromptNow(params: { streamId: string; text: string }): Promise<void> {
+  const responseUrl = getActiveReplyUrl(params.streamId);
+  if (!responseUrl) {
+    throw new Error("no response_url（无法主动推送群内提示）");
+  }
+  await useActiveReplyOnce(params.streamId, async ({ responseUrl, proxyUrl }) => {
+    const payload = {
+      msgtype: "stream",
+      stream: {
+        id: params.streamId,
+        finish: true,
+        content: truncateUtf8Bytes(params.text, STREAM_MAX_BYTES) || "1",
+      },
+    };
+    const res = await wecomFetch(
+      responseUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+      { proxyUrl, timeoutMs: LIMITS.REQUEST_TIMEOUT_MS },
+    );
+    if (!res.ok) {
+      throw new Error(`fallback prompt push failed: ${res.status}`);
+    }
+  });
+}
+
+async function sendAgentDmText(params: {
+  agent: ResolvedAgentAccount;
+  userId: string;
+  text: string;
+  core: PluginRuntime;
+}): Promise<void> {
+  const chunks = params.core.channel.text.chunkText(params.text, 20480);
+  for (const chunk of chunks) {
+    const trimmed = chunk.trim();
+    if (!trimmed) continue;
+    await sendAgentText({ agent: params.agent, toUser: params.userId, text: trimmed });
+  }
+}
+
+async function sendAgentDmMedia(params: {
+  agent: ResolvedAgentAccount;
+  userId: string;
+  mediaUrlOrPath: string;
+  contentType?: string;
+  filename: string;
+}): Promise<void> {
+  let buffer: Buffer;
+  let inferredContentType = params.contentType;
+
+  const looksLikeUrl = /^https?:\/\//i.test(params.mediaUrlOrPath);
+  if (looksLikeUrl) {
+    const res = await fetch(params.mediaUrlOrPath, { signal: AbortSignal.timeout(30_000) });
+    if (!res.ok) throw new Error(`media download failed: ${res.status}`);
+    buffer = Buffer.from(await res.arrayBuffer());
+    inferredContentType = inferredContentType || res.headers.get("content-type") || "application/octet-stream";
+  } else {
+    const fs = await import("node:fs/promises");
+    buffer = await fs.readFile(params.mediaUrlOrPath);
+  }
+
+  let mediaType: "image" | "voice" | "video" | "file" = "file";
+  const ct = (inferredContentType || "").toLowerCase();
+  if (ct.startsWith("image/")) mediaType = "image";
+  else if (ct.startsWith("audio/")) mediaType = "voice";
+  else if (ct.startsWith("video/")) mediaType = "video";
+
+  const mediaId = await uploadMedia({
+    agent: params.agent,
+    type: mediaType,
+    buffer,
+    filename: params.filename,
+  });
+  await sendAgentMedia({
+    agent: params.agent,
+    toUser: params.userId,
+    mediaId,
+    mediaType,
+  });
+}
+
+function extractLocalImagePathsFromText(params: {
+  text: string;
+  mustAlsoAppearIn: string;
+}): string[] {
+  const text = params.text;
+  const mustAlsoAppearIn = params.mustAlsoAppearIn;
+  if (!text.trim()) return [];
+
+  // Conservative: only accept common macOS absolute paths for images.
+  // Also require that the exact path appeared in the user's original message to prevent exfil.
+  const exts = "(png|jpg|jpeg|gif|webp|bmp)";
+  const re = new RegExp(String.raw`(\/(?:Users|tmp)\/[^\s"'<>]+?\.${exts})`, "gi");
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const p = m[1];
+    if (!p) continue;
+    if (!mustAlsoAppearIn.includes(p)) continue;
+    found.add(p);
+  }
+  return Array.from(found);
+}
+
+function extractLocalFilePathsFromText(text: string): string[] {
+  if (!text.trim()) return [];
+
+  // Conservative: only accept common macOS absolute paths.
+  // This is primarily for “send local file” style requests (operator/debug usage).
+  const re = new RegExp(String.raw`(\/(?:Users|tmp)\/[^\s"'<>]+)`, "g");
+  const found = new Set<string>();
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text))) {
+    const p = m[1];
+    if (!p) continue;
+    found.add(p);
+  }
+  return Array.from(found);
+}
+
+function guessContentTypeFromPath(filePath: string): string | undefined {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  if (!ext) return undefined;
+  const map: Record<string, string> = {
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    gif: "image/gif",
+    webp: "image/webp",
+    bmp: "image/bmp",
+    pdf: "application/pdf",
+    txt: "text/plain",
+    md: "text/markdown",
+    json: "application/json",
+    zip: "application/zip",
+  };
+  return map[ext];
+}
+
+function looksLikeSendLocalFileIntent(rawBody: string): boolean {
+  const t = rawBody.trim();
+  if (!t) return false;
+  // Heuristic: treat as “send file” intent only when there is an explicit local path AND a send-ish verb.
+  // This avoids accidentally sending a file when the user is merely referencing a path.
+  return /(发送|发给|发到|转发|把.*发|把.*发送|帮我发|给我发)/.test(t);
+}
+
 function storeActiveReply(streamId: string, responseUrl?: string, proxyUrl?: string): void {
   activeReplyStore.store(streamId, responseUrl, proxyUrl);
 }
@@ -288,6 +480,17 @@ function logVerbose(target: WecomWebhookTarget, message: string): void {
   target.runtime.log?.(`[wecom] ${message}`);
 }
 
+function logInfo(target: WecomWebhookTarget, message: string): void {
+  target.runtime.log?.(`[wecom] ${message}`);
+}
+
+function resolveWecomSenderUserId(msg: WecomInboundMessage): string | undefined {
+  const direct = msg.from?.userid?.trim();
+  if (direct) return direct;
+  const legacy = String((msg as any).fromuserid ?? (msg as any).from_userid ?? (msg as any).fromUserId ?? "").trim();
+  return legacy || undefined;
+}
+
 function parseWecomPlainMessage(raw: string): WecomInboundMessage {
   const parsed = JSON.parse(raw) as unknown;
   if (!parsed || typeof parsed !== "object") {
@@ -324,6 +527,7 @@ async function processInboundMessage(target: WecomWebhookTarget, msg: WecomInbou
   const maxBytes = mediaMaxMb * 1024 * 1024;
   const proxyUrl = resolveWecomEgressProxyUrl(target.config);
 
+  // 图片消息处理：如果存在 url 且配置了 aesKey，则尝试解密下载
   if (msgtype === "image") {
     const url = String((msg as any).image?.url ?? "").trim();
     if (url && aesKey) {
@@ -339,6 +543,7 @@ async function processInboundMessage(target: WecomWebhookTarget, msg: WecomInbou
         };
       } catch (err) {
         target.runtime.error?.(`Failed to decrypt inbound image: ${String(err)}`);
+        target.runtime.error?.(`图片解密失败: ${String(err)}`);
         return { body: `[image] (decryption failed: ${typeof err === 'object' && err ? (err as any).message : String(err)})` };
       }
     }
@@ -445,6 +650,7 @@ async function flushPending(pending: PendingInbound): Promise<void> {
     streamStore.markStarted(streamId);
     const enrichedTarget: WecomWebhookTarget = { ...target, core };
     logVerbose(target, `flush pending: starting agent for ${contents.length} merged messages`);
+    logVerbose(target, `防抖结束: 开始处理聚合消息 数量=${contents.length} streamId=${streamId}`);
 
     // Pass the first msg (with its media structure), and mergedContents for multi-message context
     startAgentForStream({
@@ -460,7 +666,7 @@ async function flushPending(pending: PendingInbound): Promise<void> {
         state.content = state.content || `Error: ${state.error}`;
         state.finished = true;
       });
-      target.runtime.error?.(`[${target.account.accountId}] wecom agent failed: ${String(err)}`);
+      target.runtime.error?.(`[${target.account.accountId}] wecom agent failed (处理失败): ${String(err)}`);
     });
   }
 }
@@ -513,15 +719,160 @@ async function startAgentForStream(params: {
   const config = target.config;
   const account = target.account;
 
-  const userid = msg.from?.userid?.trim() || "unknown";
+  const userid = resolveWecomSenderUserId(msg) || "unknown";
   const chatType = msg.chattype === "group" ? "group" : "direct";
   const chatId = msg.chattype === "group" ? (msg.chatid?.trim() || "unknown") : userid;
-  // 1. Process inbound message (decrypt media if any)
+  const taskKey = computeTaskKey(target, msg);
+  const aibotid = String((msg as any).aibotid ?? "").trim() || undefined;
+
+  // 更新 Stream 状态：记录上下文信息（用户ID、ChatType等）
+  streamStore.updateStream(streamId, (s) => {
+    s.userId = userid;
+    s.chatType = chatType === "group" ? "group" : "direct";
+    s.chatId = chatId;
+    s.taskKey = taskKey;
+    s.aibotid = aibotid;
+  });
+
+  // 1. 处理入站消息 (Decrypt media if any)
+  // 解析消息体，若是图片/文件则自动解密
   let { body: rawBody, media } = await processInboundMessage(target, msg);
 
-  // Override body with merged contents if available (debounced messages)
+  // 若存在从防抖逻辑聚合来的多条消息内容，则覆盖 rawBody
   if (params.mergedContents) {
     rawBody = params.mergedContents;
+  }
+
+  // P0: 群聊/私聊里“让 Bot 发送本机图片/文件路径”的场景，优先走 Bot 原会话交付（图片），
+  // 非图片文件则走 Agent 私信兜底，并确保 Bot 会话里有中文提示。
+  //
+  // 典型背景：Agent 主动发群 chatId（wr/wc...）在很多情况下会 86008，无论怎么“修复”都发不出去；
+  // 这种请求如果能被动回复图片，就必须由 Bot 在群内交付。
+  const directLocalPaths = extractLocalFilePathsFromText(rawBody);
+  if (directLocalPaths.length) {
+    logVerbose(
+      target,
+      `local-path: 检测到用户消息包含本机路径 count=${directLocalPaths.length} intent=${looksLikeSendLocalFileIntent(rawBody)}`,
+    );
+  }
+  if (directLocalPaths.length && looksLikeSendLocalFileIntent(rawBody)) {
+    const fs = await import("node:fs/promises");
+    const pathModule = await import("node:path");
+    const imageExts = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp"]);
+
+    const imagePaths: string[] = [];
+    const otherPaths: string[] = [];
+    for (const p of directLocalPaths) {
+      const ext = pathModule.extname(p).slice(1).toLowerCase();
+      if (imageExts.has(ext)) imagePaths.push(p);
+      else otherPaths.push(p);
+    }
+
+    // 1) 图片：优先 Bot 群内/原会话交付（被动/流式 msg_item）
+    if (imagePaths.length > 0 && otherPaths.length === 0) {
+      const loaded: Array<{ base64: string; md5: string; path: string }> = [];
+      for (const p of imagePaths) {
+        try {
+          const buf = await fs.readFile(p);
+          const base64 = buf.toString("base64");
+          const md5 = crypto.createHash("md5").update(buf).digest("hex");
+          loaded.push({ base64, md5, path: p });
+        } catch (err) {
+          target.runtime.error?.(`local-path: 读取图片失败 path=${p}: ${String(err)}`);
+        }
+      }
+
+      if (loaded.length > 0) {
+        streamStore.updateStream(streamId, (s) => {
+          s.images = loaded.map(({ base64, md5 }) => ({ base64, md5 }));
+          s.content = loaded.length === 1
+            ? `已发送图片（${pathModule.basename(loaded[0]!.path)}）`
+            : `已发送 ${loaded.length} 张图片`;
+          s.finished = true;
+        });
+
+        const responseUrl = getActiveReplyUrl(streamId);
+        if (responseUrl) {
+          try {
+            const finalReply = buildStreamReplyFromState(streamStore.getStream(streamId)!) as unknown as Record<string, unknown>;
+            await useActiveReplyOnce(streamId, async ({ responseUrl, proxyUrl }) => {
+              const res = await wecomFetch(
+                responseUrl,
+                {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify(finalReply),
+                },
+                { proxyUrl, timeoutMs: LIMITS.REQUEST_TIMEOUT_MS },
+              );
+              if (!res.ok) throw new Error(`local-path image push failed: ${res.status}`);
+            });
+            logVerbose(target, `local-path: 已通过 Bot response_url 推送图片 frames=final images=${loaded.length}`);
+          } catch (err) {
+            target.runtime.error?.(`local-path: Bot 主动推送图片失败（将依赖 stream_refresh 拉取）: ${String(err)}`);
+          }
+        } else {
+          logVerbose(target, `local-path: 无 response_url，等待 stream_refresh 拉取最终图片`);
+        }
+        return;
+      }
+    }
+
+    // 2) 非图片文件：Bot 会话里提示 + Agent 私信兜底（目标锁定 userId）
+    if (otherPaths.length > 0) {
+      const agentCfg = resolveAgentAccountOrUndefined(config);
+      const agentOk = Boolean(agentCfg);
+
+      const filename = otherPaths.length === 1 ? otherPaths[0]!.split("/").pop()! : `${otherPaths.length} 个文件`;
+      const prompt = buildFallbackPrompt({
+        kind: "media",
+        agentConfigured: agentOk,
+        userId: userid,
+        filename,
+        chatType,
+      });
+
+      streamStore.updateStream(streamId, (s) => {
+        s.fallbackMode = "media";
+        s.finished = true;
+        s.content = prompt;
+        s.fallbackPromptSentAt = s.fallbackPromptSentAt ?? Date.now();
+      });
+
+      try {
+        await sendBotFallbackPromptNow({ streamId, text: prompt });
+        logVerbose(target, `local-path: 文件兜底提示已推送`);
+      } catch (err) {
+        target.runtime.error?.(`local-path: 文件兜底提示推送失败: ${String(err)}`);
+      }
+
+      if (!agentCfg) return;
+      if (!userid || userid === "unknown") {
+        target.runtime.error?.(`local-path: 无法识别触发者 userId，无法 Agent 私信发送文件`);
+        return;
+      }
+
+      for (const p of otherPaths) {
+        const alreadySent = streamStore.getStream(streamId)?.agentMediaKeys?.includes(p);
+        if (alreadySent) continue;
+        try {
+          await sendAgentDmMedia({
+            agent: agentCfg,
+            userId: userid,
+            mediaUrlOrPath: p,
+            contentType: guessContentTypeFromPath(p),
+            filename: p.split("/").pop() || "file",
+          });
+          streamStore.updateStream(streamId, (s) => {
+            s.agentMediaKeys = Array.from(new Set([...(s.agentMediaKeys ?? []), p]));
+          });
+          logVerbose(target, `local-path: 文件已通过 Agent 私信发送 user=${userid} path=${p}`);
+        } catch (err) {
+          target.runtime.error?.(`local-path: Agent 私信发送文件失败 path=${p}: ${String(err)}`);
+        }
+      }
+      return;
+    }
   }
 
   // 2. Save media if present
@@ -553,6 +904,7 @@ async function startAgentForStream(params: {
   });
 
   logVerbose(target, `starting agent processing (streamId=${streamId}, agentId=${route.agentId}, peerKind=${chatType}, peerId=${chatId})`);
+  logVerbose(target, `启动 Agent 处理: streamId=${streamId} 路由=${route.agentId} 类型=${chatType} ID=${chatId}`);
 
   const fromLabel = chatType === "group" ? `group:${chatId}` : `user:${userid}`;
   const storePath = core.channel.session.resolveStorePath(config.session?.store, {
@@ -637,14 +989,36 @@ async function startAgentForStream(params: {
     accountId: account.accountId,
   });
 
+  // WeCom Bot 会话交付约束：
+  // - 图片应尽量由 Bot 在原会话交付（流式最终帧 msg_item）。
+  // - 非图片文件走 Agent 私信兜底（本文件中实现），并由 Bot 给出提示。
+  //
+  // 重要：message 工具不是 sandbox 工具，必须通过 cfg.tools.deny 禁用。
+  // 否则 Agent 可能直接通过 message 工具私信/发群，绕过 Bot 交付链路，导致群里“没有任何提示”。
+  const cfgForDispatch = (() => {
+    const baseTools = (config as any)?.tools ?? {};
+    const existingDeny = Array.isArray(baseTools.deny) ? (baseTools.deny as string[]) : [];
+    const deny = Array.from(new Set([...existingDeny, "message"]));
+    return {
+      ...(config as any),
+      tools: {
+        ...baseTools,
+        deny,
+      },
+    } as OpenClawConfig;
+  })();
+  logVerbose(target, `tool-policy: WeCom Bot 会话已禁用 message 工具（防止绕过 Bot 交付）`);
+
+  // 调度 Agent 回复
+  // 使用 dispatchReplyWithBufferedBlockDispatcher 可以处理流式输出 buffer
   await core.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
     ctx: ctxPayload,
-    cfg: config,
+    cfg: cfgForDispatch,
     dispatcherOptions: {
       deliver: async (payload) => {
         let text = payload.text ?? "";
 
-        // Protect <think> tags from table conversion
+        // 保护 <think> 标签不被 markdown 表格转换破坏
         const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
         const thinks: string[] = [];
         text = text.replace(thinkRegex, (match: string) => {
@@ -710,6 +1084,88 @@ async function startAgentForStream(params: {
         if (!current) return;
 
         if (!current.images) current.images = [];
+        if (!current.agentMediaKeys) current.agentMediaKeys = [];
+
+        logVerbose(
+          target,
+          `deliver: chatType=${current.chatType ?? chatType} user=${current.userId ?? userid} textLen=${text.length} mediaCount=${(payload.mediaUrls?.length ?? 0) + (payload.mediaUrl ? 1 : 0)}`,
+        );
+
+        // If the model referenced a local image path in its reply but did not emit mediaUrl(s),
+        // we can still deliver it via Bot *only* when that exact path appeared in the user's
+        // original message (rawBody). This prevents the model from exfiltrating arbitrary files.
+        if (!payload.mediaUrl && !(payload.mediaUrls?.length ?? 0) && text.includes("/")) {
+          const candidates = extractLocalImagePathsFromText({ text, mustAlsoAppearIn: rawBody });
+          if (candidates.length > 0) {
+            logVerbose(target, `media: 从输出文本推断到本机图片路径（来自用户原消息）count=${candidates.length}`);
+            for (const p of candidates) {
+              try {
+                const fs = await import("node:fs/promises");
+                const pathModule = await import("node:path");
+                const buf = await fs.readFile(p);
+                const ext = pathModule.extname(p).slice(1).toLowerCase();
+                const imageExts: Record<string, string> = {
+                  jpg: "image/jpeg",
+                  jpeg: "image/jpeg",
+                  png: "image/png",
+                  gif: "image/gif",
+                  webp: "image/webp",
+                  bmp: "image/bmp",
+                };
+                const contentType = imageExts[ext] ?? "application/octet-stream";
+                if (!contentType.startsWith("image/")) {
+                  continue;
+                }
+                const base64 = buf.toString("base64");
+                const md5 = crypto.createHash("md5").update(buf).digest("hex");
+                current.images.push({ base64, md5 });
+                logVerbose(target, `media: 已加载本机图片用于 Bot 交付 path=${p}`);
+              } catch (err) {
+                target.runtime.error?.(`media: 读取本机图片失败 path=${p}: ${String(err)}`);
+              }
+            }
+          }
+        }
+
+        // Always accumulate content for potential Agent DM fallback (not limited by STREAM_MAX_BYTES).
+        if (text.trim()) {
+          streamStore.updateStream(streamId, (s) => {
+            appendDmContent(s, text);
+          });
+        }
+
+        // Timeout fallback (group only): near 6min window, stop bot stream and switch to Agent DM.
+        const now = Date.now();
+        const deadline = current.createdAt + BOT_WINDOW_MS;
+        const switchAt = deadline - BOT_SWITCH_MARGIN_MS;
+        const nearTimeout = !current.fallbackMode && !current.finished && now >= switchAt;
+        if (nearTimeout) {
+          const agentCfg = resolveAgentAccountOrUndefined(config);
+          const agentOk = Boolean(agentCfg);
+          const prompt = buildFallbackPrompt({
+            kind: "timeout",
+            agentConfigured: agentOk,
+            userId: current.userId,
+            chatType: current.chatType,
+          });
+          logVerbose(
+            target,
+            `fallback(timeout): 触发切换（接近 6 分钟）chatType=${current.chatType} agentConfigured=${agentOk} hasResponseUrl=${Boolean(getActiveReplyUrl(streamId))}`,
+          );
+          streamStore.updateStream(streamId, (s) => {
+            s.fallbackMode = "timeout";
+            s.finished = true;
+            s.content = prompt;
+            s.fallbackPromptSentAt = s.fallbackPromptSentAt ?? Date.now();
+          });
+          try {
+            await sendBotFallbackPromptNow({ streamId, text: prompt });
+            logVerbose(target, `fallback(timeout): 群内提示已推送`);
+          } catch (err) {
+            target.runtime.error?.(`wecom bot fallback prompt push failed (timeout) streamId=${streamId}: ${String(err)}`);
+          }
+          return;
+        }
 
         const mediaUrls = payload.mediaUrls || (payload.mediaUrl ? [payload.mediaUrl] : []);
         for (const mediaPath of mediaUrls) {
@@ -739,13 +1195,66 @@ async function startAgentForStream(params: {
               const base64 = buf.toString("base64");
               const md5 = crypto.createHash("md5").update(buf).digest("hex");
               current.images.push({ base64, md5 });
+              logVerbose(target, `media: 识别为图片 contentType=${contentType} filename=${filename}`);
             } else {
-              text += `\n\n[File: ${filename}]`;
+              // Non-image media: Bot 不支持原样发送（尤其群聊），统一切换到 Agent 私信兜底，并在 Bot 会话里提示用户。
+              const agentCfg = resolveAgentAccountOrUndefined(config);
+              const agentOk = Boolean(agentCfg);
+              const alreadySent = current.agentMediaKeys.includes(mediaPath);
+              logVerbose(
+                target,
+                `fallback(media): 检测到非图片文件 chatType=${current.chatType} contentType=${contentType ?? "unknown"} filename=${filename} agentConfigured=${agentOk} alreadySent=${alreadySent} hasResponseUrl=${Boolean(getActiveReplyUrl(streamId))}`,
+              );
+
+              if (agentCfg && !alreadySent && current.userId) {
+                try {
+                  await sendAgentDmMedia({
+                    agent: agentCfg,
+                    userId: current.userId,
+                    mediaUrlOrPath: mediaPath,
+                    contentType,
+                    filename,
+                  });
+                  logVerbose(target, `fallback(media): 文件已通过 Agent 私信发送 user=${current.userId}`);
+                  streamStore.updateStream(streamId, (s) => {
+                    s.agentMediaKeys = Array.from(new Set([...(s.agentMediaKeys ?? []), mediaPath]));
+                  });
+                } catch (err) {
+                  target.runtime.error?.(`wecom agent dm media failed: ${String(err)}`);
+                }
+              }
+
+              if (!current.fallbackMode) {
+                const prompt = buildFallbackPrompt({
+                  kind: "media",
+                  agentConfigured: agentOk,
+                  userId: current.userId,
+                  filename,
+                  chatType: current.chatType,
+                });
+                streamStore.updateStream(streamId, (s) => {
+                  s.fallbackMode = "media";
+                  s.finished = true;
+                  s.content = prompt;
+                  s.fallbackPromptSentAt = s.fallbackPromptSentAt ?? Date.now();
+                });
+                try {
+                  await sendBotFallbackPromptNow({ streamId, text: prompt });
+                  logVerbose(target, `fallback(media): 群内提示已推送`);
+                } catch (err) {
+                  target.runtime.error?.(`wecom bot fallback prompt push failed (media) streamId=${streamId}: ${String(err)}`);
+                }
+              }
+              return;
             }
           } catch (err) {
             target.runtime.error?.(`Failed to process outbound media: ${mediaPath}: ${String(err)}`);
           }
         }
+
+        // If we are in fallback mode, do not continue updating the bot stream content.
+        const mode = streamStore.getStream(streamId)?.fallbackMode;
+        if (mode) return;
 
         const nextText = current.content
           ? `${current.content}\n\n${text}`.trim()
@@ -764,6 +1273,28 @@ async function startAgentForStream(params: {
   });
 
   streamStore.markFinished(streamId);
+
+  // Timeout fallback final delivery (Agent DM): send once after the agent run completes.
+  const finishedState = streamStore.getStream(streamId);
+  if (finishedState?.fallbackMode === "timeout" && !finishedState.finalDeliveredAt) {
+    const agentCfg = resolveAgentAccountOrUndefined(config);
+    if (!agentCfg) {
+      // Agent not configured - group prompt already explains the situation.
+      streamStore.updateStream(streamId, (s) => { s.finalDeliveredAt = Date.now(); });
+    } else if (finishedState.userId) {
+      const dmText = (finishedState.dmContent ?? "").trim();
+      if (dmText) {
+        try {
+          logVerbose(target, `fallback(timeout): 开始通过 Agent 私信发送剩余内容 user=${finishedState.userId} len=${dmText.length}`);
+          await sendAgentDmText({ agent: agentCfg, userId: finishedState.userId, text: dmText, core });
+          logVerbose(target, `fallback(timeout): Agent 私信发送完成 user=${finishedState.userId}`);
+        } catch (err) {
+          target.runtime.error?.(`wecom agent dm text failed (timeout): ${String(err)}`);
+        }
+      }
+      streamStore.updateStream(streamId, (s) => { s.finalDeliveredAt = Date.now(); });
+    }
+  }
 
   // Bot 群聊图片兜底：
   // 依赖企业微信的“流式消息刷新”回调来拉取最终消息有时会出现客户端未能及时拉取到最后一帧的情况，
@@ -1037,52 +1568,72 @@ export async function handleWecomWebhookRequest(req: IncomingMessage, res: Serve
   }
 
   // Handle Message (with Debounce)
-  const userid = msg.from?.userid?.trim() || "unknown";
-  const chatId = msg.chattype === "group" ? (msg.chatid?.trim() || "unknown") : userid;
-  const pendingKey = `wecom:${target.account.accountId}:${userid}:${chatId}`;
-  const msgContent = buildInboundBody(msg);
+  try {
+    const userid = resolveWecomSenderUserId(msg) || "unknown";
+    const chatId = msg.chattype === "group" ? (msg.chatid?.trim() || "unknown") : userid;
+    const pendingKey = `wecom:${target.account.accountId}:${userid}:${chatId}`;
+    const msgContent = buildInboundBody(msg);
 
-  // 去重: msgid if exists
-  if (msg.msgid) {
-    const existingStreamId = streamStore.getStreamByMsgId(String(msg.msgid));
-    if (existingStreamId) {
-      logVerbose(target, `message: 重复的 msgid=${msg.msgid}，跳过处理并返回占位符`);
-      jsonOk(res, buildEncryptedJsonReply({
-        account: target.account,
-        plaintextJson: buildStreamPlaceholderReply({
-          streamId: existingStreamId,
-          placeholderContent: target.account.config.streamPlaceholderContent
-        }),
-        nonce,
-        timestamp
-      }));
-      return true;
+    logInfo(
+      target,
+      `inbound: msgtype=${msgtype} chattype=${String(msg.chattype ?? "")} chatid=${String(msg.chatid ?? "")} from=${userid} msgid=${String(msg.msgid ?? "")} hasResponseUrl=${Boolean((msg as any).response_url)}`,
+    );
+
+    // 去重: 若 msgid 已存在于 StreamStore，说明是重试请求，直接返回占位符
+    if (msg.msgid) {
+      const existingStreamId = streamStore.getStreamByMsgId(String(msg.msgid));
+      if (existingStreamId) {
+        logInfo(target, `message: 重复的 msgid=${msg.msgid}，跳过处理并返回占位符 streamId=${existingStreamId}`);
+        jsonOk(res, buildEncryptedJsonReply({
+          account: target.account,
+          plaintextJson: buildStreamPlaceholderReply({
+            streamId: existingStreamId,
+            placeholderContent: target.account.config.streamPlaceholderContent
+          }),
+          nonce,
+          timestamp
+        }));
+        return true;
+      }
     }
+
+    // 加入 Pending 队列 (防抖/聚合)
+    // 消息不会立即处理，而是等待防抖计时器结束（flushPending）后统一触发
+    const { streamId, isNew } = streamStore.addPendingMessage({
+      pendingKey,
+      target,
+      msg,
+      msgContent,
+      nonce,
+      timestamp,
+      debounceMs: (target.account.config as any).debounceMs
+    });
+
+    if (isNew) {
+      storeActiveReply(streamId, msg.response_url, proxyUrl);
+    }
+
+    jsonOk(res, buildEncryptedJsonReply({
+      account: target.account,
+      plaintextJson: buildStreamPlaceholderReply({
+        streamId,
+        placeholderContent: target.account.config.streamPlaceholderContent
+      }),
+      nonce,
+      timestamp
+    }));
+    return true;
+  } catch (err) {
+    target.runtime.error?.(`[wecom] Bot message handler crashed: ${String(err)}`);
+    // 尽量返回 200，避免企微重试风暴；同时给一个可见的错误文本
+    jsonOk(res, buildEncryptedJsonReply({
+      account: target.account,
+      plaintextJson: { msgtype: "text", text: { content: "服务内部错误：Bot 处理异常，请稍后重试。" } },
+      nonce,
+      timestamp
+    }));
+    return true;
   }
-
-  const { streamId, isNew } = streamStore.addPendingMessage({
-    pendingKey,
-    target,
-    msg,
-    msgContent,
-    nonce,
-    timestamp
-  });
-
-  if (isNew) {
-    storeActiveReply(streamId, msg.response_url, proxyUrl);
-  }
-
-  jsonOk(res, buildEncryptedJsonReply({
-    account: target.account,
-    plaintextJson: buildStreamPlaceholderReply({
-      streamId,
-      placeholderContent: target.account.config.streamPlaceholderContent
-    }),
-    nonce,
-    timestamp
-  }));
-  return true;
 }
 
 export async function sendActiveMessage(streamId: string, content: string): Promise<void> {

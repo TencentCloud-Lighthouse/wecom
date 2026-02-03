@@ -20,6 +20,7 @@ export const WecomConfigSchema = z.object({
   receiveId: z.string().optional(),
 
   streamPlaceholderContent: z.string().optional(),
+  debounceMs: z.number().optional(),
 
   welcomeText: z.string().optional(),
   dm: dmSchema,
@@ -33,6 +34,7 @@ export const WecomConfigSchema = z.object({
     encodingAESKey: z.string().optional(),
     receiveId: z.string().optional(),
     streamPlaceholderContent: z.string().optional(),
+    debounceMs: z.number().optional(),
     welcomeText: z.string().optional(),
     dm: dmSchema,
   })).optional(),

@@ -129,8 +129,10 @@ export class StreamStore {
         msgContent: string;
         nonce: string;
         timestamp: string;
+        debounceMs?: number;
     }): { streamId: string; isNew: boolean } {
-        const { pendingKey, target, msg, msgContent, nonce, timestamp } = params;
+        const { pendingKey, target, msg, msgContent, nonce, timestamp, debounceMs } = params;
+        const effectiveDebounceMs = debounceMs ?? LIMITS.DEFAULT_DEBOUNCE_MS;
         const existing = this.pendingInbounds.get(pendingKey);
 
         if (existing) {
@@ -141,7 +143,7 @@ export class StreamStore {
             // 重置定时器 (Debounce)
             existing.timeout = setTimeout(() => {
                 this.flushPending(pendingKey);
-            }, LIMITS.DEFAULT_DEBOUNCE_MS);
+            }, effectiveDebounceMs);
 
             return { streamId: existing.streamId, isNew: false };
         }
@@ -159,7 +161,7 @@ export class StreamStore {
             createdAt: Date.now(),
             timeout: setTimeout(() => {
                 this.flushPending(pendingKey);
-            }, LIMITS.DEFAULT_DEBOUNCE_MS)
+            }, effectiveDebounceMs)
         };
         this.pendingInbounds.set(pendingKey, pending);
         return { streamId, isNew: true };
@@ -312,7 +314,7 @@ class MonitorState {
     /** 主要的流状态存储 */
     public readonly streamStore = new StreamStore();
     /** 主动回复地址存储 */
-    public readonly activeReplyStore = new ActiveReplyStore("once");
+    public readonly activeReplyStore = new ActiveReplyStore("multi");
 
     private pruneInterval?: NodeJS.Timeout;
 

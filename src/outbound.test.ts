@@ -40,24 +40,13 @@ describe("wecomOutbound", () => {
       },
     };
 
-    const chatResult = await wecomOutbound.sendText({
-      cfg,
-      to: "wr123",
-      text: "hello",
-    } as any);
-
-    expect(api.sendText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        chatId: "wr123",
-        toUser: undefined,
-        text: "hello",
-      }),
+    // Chat ID (wr/wc) is intentionally NOT supported for Agent outbound.
+    await expect(wecomOutbound.sendText({ cfg, to: "wr123", text: "hello" } as any)).rejects.toThrow(
+      /不支持向群 chatId 发送/,
     );
-    expect(chatResult.channel).toBe("wecom");
-    expect(chatResult.messageId).toBe("agent-123");
+    expect(api.sendText).not.toHaveBeenCalled();
 
-    (api.sendText as any).mockClear();
-
+    // Test: User ID (Default)
     const userResult = await wecomOutbound.sendText({
       cfg,
       to: "userid123",
@@ -67,12 +56,45 @@ describe("wecomOutbound", () => {
       expect.objectContaining({
         chatId: undefined,
         toUser: "userid123",
+        toParty: undefined,
+        toTag: undefined,
         text: "hi",
       }),
     );
     expect(userResult.messageId).toBe("agent-123");
 
+    (api.sendText as any).mockClear();
+
+    // Test: User ID explicit
+    await wecomOutbound.sendText({ cfg, to: "user:zhangsan", text: "hi" } as any);
+    expect(api.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ toUser: "zhangsan", toParty: undefined }),
+    );
+
+    (api.sendText as any).mockClear();
+
+    // Test: Party ID (Numeric)
+    await wecomOutbound.sendText({ cfg, to: "1001", text: "hi party" } as any);
+    expect(api.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ toUser: undefined, toParty: "1001" }),
+    );
+
+    (api.sendText as any).mockClear();
+
+    // Test: Party ID Explicit
+    await wecomOutbound.sendText({ cfg, to: "party:2002", text: "hi party 2" } as any);
+    expect(api.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ toUser: undefined, toParty: "2002" }),
+    );
+
+    (api.sendText as any).mockClear();
+
+    // Test: Tag ID Explicit
+    await wecomOutbound.sendText({ cfg, to: "tag:1", text: "hi tag" } as any);
+    expect(api.sendText).toHaveBeenCalledWith(
+      expect.objectContaining({ toUser: undefined, toTag: "1" }),
+    );
+
     now.mockRestore();
   });
 });
-

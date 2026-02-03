@@ -80,17 +80,21 @@ export async function getAccessToken(agent: ResolvedAgentAccount): Promise<strin
  * 调用 `message/send` (Agent) 或 `appchat/send` (群聊) 发送文本。
  * 
  * @param params.agent 发送方 Agent
- * @param params.toUser 接收用户 ID (单聊必填)
- * @param params.chatId 接收群 ID (群聊必填)
+ * @param params.toUser 接收用户 ID (单聊可选，可与 toParty/toTag 同时使用)
+ * @param params.toParty 接收部门 ID (单聊可选)
+ * @param params.toTag 接收标签 ID (单聊可选)
+ * @param params.chatId 接收群 ID (群聊模式必填，互斥)
  * @param params.text 消息内容
  */
 export async function sendText(params: {
     agent: ResolvedAgentAccount;
     toUser?: string;
+    toParty?: string;
+    toTag?: string;
     chatId?: string;
     text: string;
 }): Promise<void> {
-    const { agent, toUser, chatId, text } = params;
+    const { agent, toUser, toParty, toTag, chatId, text } = params;
     const token = await getAccessToken(agent);
 
     const useChat = Boolean(chatId);
@@ -100,7 +104,14 @@ export async function sendText(params: {
 
     const body = useChat
         ? { chatid: chatId, msgtype: "text", text: { content: text } }
-        : { touser: toUser, msgtype: "text", agentid: agent.agentId, text: { content: text } };
+        : {
+            touser: toUser,
+            toparty: toParty,
+            totag: toTag,
+            msgtype: "text",
+            agentid: agent.agentId,
+            text: { content: text }
+        };
 
     const res = await wecomFetch(url, {
         method: "POST",
@@ -187,19 +198,27 @@ export async function uploadMedia(params: {
  * 发送图片、音频、视频或文件。需先通过 `uploadMedia` 获取 media_id。
  * 
  * @param params.agent 发送方 Agent
+ * @param params.toUser 接收用户 ID (单聊可选)
+ * @param params.toParty 接收部门 ID (单聊可选)
+ * @param params.toTag 接收标签 ID (单聊可选)
+ * @param params.chatId 接收群 ID (群聊模式必填)
  * @param params.mediaId 媒体 ID
  * @param params.mediaType 媒体类型
+ * @param params.title 视频标题 (可选)
+ * @param params.description 视频描述 (可选)
  */
 export async function sendMedia(params: {
     agent: ResolvedAgentAccount;
     toUser?: string;
+    toParty?: string;
+    toTag?: string;
     chatId?: string;
     mediaId: string;
     mediaType: "image" | "voice" | "video" | "file";
     title?: string;
     description?: string;
 }): Promise<void> {
-    const { agent, toUser, chatId, mediaId, mediaType, title, description } = params;
+    const { agent, toUser, toParty, toTag, chatId, mediaId, mediaType, title, description } = params;
     const token = await getAccessToken(agent);
 
     const useChat = Boolean(chatId);
@@ -213,7 +232,14 @@ export async function sendMedia(params: {
 
     const body = useChat
         ? { chatid: chatId, msgtype: mediaType, [mediaType]: mediaPayload }
-        : { touser: toUser, msgtype: mediaType, agentid: agent.agentId, [mediaType]: mediaPayload };
+        : {
+            touser: toUser,
+            toparty: toParty,
+            totag: toTag,
+            msgtype: mediaType,
+            agentid: agent.agentId,
+            [mediaType]: mediaPayload
+        };
 
     const res = await wecomFetch(url, {
         method: "POST",

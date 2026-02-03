@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sendActiveMessage, handleWecomWebhookRequest, registerWecomWebhookTarget } from "./monitor.js";
 import * as cryptoHelpers from "./crypto.js";
 import * as runtime from "./runtime.js";
+import * as agentApi from "./agent/api-client.js";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import * as crypto from "node:crypto";
@@ -14,6 +15,12 @@ const { undiciFetch } = vi.hoisted(() => {
 vi.mock("undici", () => ({
     fetch: undiciFetch,
     ProxyAgent: class ProxyAgent { },
+}));
+
+vi.mock("./agent/api-client.js", () => ({
+    sendText: vi.fn(),
+    sendMedia: vi.fn(),
+    uploadMedia: vi.fn(),
 }));
 
 // Helpers
@@ -39,6 +46,9 @@ function createMockResponse(): ServerResponse {
 describe("Monitor Active Features", () => {
     let capturedDeliver: ((payload: { text: string }) => Promise<void>) | undefined;
     let mockCore: any;
+    let msgSeq = 0;
+    let senderUserId = "";
+    let senderChatId = "";
     // Valid 32-byte AES Key (Base64 encoded)
     const validKey = "jWmYm7qr5nMoCAstdRmNjt3p7vsH8HkK+qiJqQ0aaaa=";
 
@@ -46,6 +56,10 @@ describe("Monitor Active Features", () => {
         vi.useFakeTimers();
         capturedDeliver = undefined;
         vi.restoreAllMocks();
+        undiciFetch.mockClear();
+        msgSeq += 1;
+        senderUserId = `zhangsan-${msgSeq}`;
+        senderChatId = `wr123-${msgSeq}`;
 
         // Spy on crypto.randomBytes (default export in monitor.ts usage)
         vi.spyOn(crypto.default, "randomBytes").mockImplementation((size) => {
@@ -62,7 +76,11 @@ describe("Monitor Active Features", () => {
         // If this fails, we will know.
         vi.spyOn(cryptoHelpers, "decryptWecomEncrypted").mockImplementation((opts) => {
             return JSON.stringify({
-                msgid: "test-msg-id",
+                msgid: `test-msg-id-${msgSeq}`,
+                aibotid: "bot-1",
+                chattype: "group",
+                chatid: senderChatId,
+                from: { userid: senderUserId },
                 msgtype: "text",
                 text: { content: "hello" },
                 response_url: "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
@@ -105,7 +123,20 @@ describe("Monitor Active Features", () => {
 
         registerWecomWebhookTarget({
             account: { accountId: "1", enabled: true, configured: true, token: "T", encodingAESKey: validKey, receiveId: "R", config: {} as any },
-            config: {} as any,
+            config: {
+                channels: {
+                    wecom: {
+                        enabled: true,
+                        agent: {
+                            corpId: "corp",
+                            corpSecret: "secret",
+                            agentId: 1000002,
+                            token: "token",
+                            encodingAESKey: "aes",
+                        },
+                    },
+                },
+            } as any,
             runtime: { log: () => { } },
             core: mockCore,
             path: "/wecom"
@@ -124,7 +155,7 @@ describe("Monitor Active Features", () => {
         // The WeCom monitor debounces inbound messages before starting the agent.
         // `flushPending` triggers async agent start without awaiting it, so give the
         // microtask queue a chance to run after the timer fires.
-        await vi.advanceTimersByTimeAsync(600);
+        await vi.runOnlyPendingTimersAsync();
         await Promise.resolve();
         await Promise.resolve();
 
@@ -165,4 +196,44 @@ describe("Monitor Active Features", () => {
             }),
         );
     });
+
+    it("should fallback non-image media to agent DM (and push a Chinese prompt)", async () => {
+        const { uploadMedia, sendMedia } = agentApi as any;
+        uploadMedia.mockResolvedValue("media-id-1");
+        sendMedia.mockResolvedValue(undefined);
+
+        const req = createMockRequest({ encrypt: "mock-encrypt" });
+        const res = createMockResponse();
+        await handleWecomWebhookRequest(req, res);
+
+        await vi.advanceTimersByTimeAsync(600);
+        await Promise.resolve();
+        await Promise.resolve();
+
+        expect(capturedDeliver).toBeDefined();
+
+        // Create a local PDF to force non-image content-type inference.
+        const fs = await import("node:fs/promises");
+        const os = await import("node:os");
+        const path = await import("node:path");
+        const tmp = path.join(os.tmpdir(), `wecom-test-${Date.now()}.pdf`);
+        await fs.writeFile(tmp, Buffer.from("pdf"));
+
+        undiciFetch.mockResolvedValue(new Response("ok", { status: 200 }));
+
+        await capturedDeliver!({ text: "here", mediaUrls: [tmp] } as any);
+
+        expect(uploadMedia).toHaveBeenCalled();
+        expect(sendMedia).toHaveBeenCalledWith(
+            expect.objectContaining({
+                toUser: senderUserId,
+                mediaType: "file",
+            }),
+        );
+        // Ensure we attempted to push a prompt to response_url (uses undici fetch).
+        expect(undiciFetch).toHaveBeenCalled();
+    });
+
+    // 注：本机路径（/Users/... 或 /tmp/...）短路发图逻辑属于运行态特性，
+    // 单测在 fake timers + module singleton 状态下容易引入脆弱性；这里优先覆盖更关键的兜底链路与去重逻辑。
 });

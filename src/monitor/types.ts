@@ -53,6 +53,16 @@ export type WecomWebhookTarget = {
 export type StreamState = {
     streamId: string;
     msgid?: string;
+    /** 触发者 userid（用于 Agent 私信兜底） */
+    userId?: string;
+    /** 会话类型（用于群聊兜底逻辑） */
+    chatType?: "group" | "direct";
+    /** 群聊 chatid（用于日志/提示，不用于 Agent 发群） */
+    chatId?: string;
+    /** 智能机器人 aibotid（用于 taskKey 生成与日志） */
+    aibotid?: string;
+    /** Bot 回调幂等键（用于最终交付幂等） */
+    taskKey?: string;
     createdAt: number;
     updatedAt: number;
     started: boolean;
@@ -60,6 +70,16 @@ export type StreamState = {
     error?: string;
     content: string;
     images?: { base64: string; md5: string }[];
+    /** 兜底模式（仅作为内部状态，不暴露给企微） */
+    fallbackMode?: "media" | "timeout" | "error";
+    /** 群内兜底提示是否已发送（用于防重复刷屏） */
+    fallbackPromptSentAt?: number;
+    /** Agent 私信最终交付是否已完成（用于防重复发送） */
+    finalDeliveredAt?: number;
+    /** 用于私信兜底的完整内容（不受 STREAM_MAX_BYTES 限制，但仍需上限保护） */
+    dmContent?: string;
+    /** 已通过 Agent 私信发送过的媒体标识（防重复发送附件） */
+    agentMediaKeys?: string[];
 };
 
 /**

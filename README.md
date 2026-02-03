@@ -14,21 +14,35 @@
 
 ---
 
-## 🚀 全网首发 · 功能全面 —— 功能亮点
+## 💡 核心价值：为什么选择本插件？
 
-本插件提供**完整支持企业微信双模式（Bot + Agent）**的深度集成方案。相比目前其他的开源方案，我们提供企业级生产环境所需的全部特性：
+### 🏗 独创架构：Bot + Agent 双模融合
 
-| 核心特性 | 本插件 | 其他开源方案 | 优势说明 |
-|:---|:---:|:---:|:---|
-| 🔥 **双模式并行** | ✅ **完美支持** | ❌ 仅支持单模式 | 同时使用 Bot 的便捷与 Agent 的强大能力 |
-| ⚡ **原生流式回复** | ✅ **Bot/Agent 全支持** | ❌ 伪流式/不支持 | 真实打字机效果，告别长时间转圈等待 |
-| 📡 **主动消息推送** | ✅ **支持** | ❌ 仅被动回复 | 可随时通过 API 发送消息，脱离回调限制 |
-| 🔐 **双协议加密** | ✅ **JSON + XML** | ⚠️ 部分支持 | 完整兼容企微新旧两种加密标准，安全无忧 |
-| 📎 **全媒体处理** | ✅ **图片/语音/文件/视频** | ⚠️ 仅文本/图片 | 自动解密下载媒体文件，语音自动转文字 |
-| 🎴 **交互式卡片** | ✅ **Template Card** | ❌ 不支持 | 支持按钮交互回调，打造复杂业务流 |
-| 🔄 **Token 自运维** | ✅ **自动缓存刷新** | ❌ 需手工处理 | 内置 AccessToken 管理器，故障自动重试 |
+传统的企微插件通常只能在 "只能聊天的机器人 (Bot)" 和 "只能推送的自建应用 (Agent)" 之间二选一。
+本插件采用 **双模并行架构**，同时压榨两种模式的极限能力：
 
+*   **Bot 通道 (智能体)**：负责 **实时对话**。提供毫秒级流式响应（打字机效果），零延迟交互。
+*   **Agent 通道 (自建应用)**：负责 **能力兜底**。当需要发送图片/文件、进行全员广播、或 Bot 对话超时（>6分钟）时，无缝切换到 Agent 通道接管。
 
+### 🧩 功能特性全景
+
+#### 1. 🗣 **沉浸式交互 (Immersive Interaction)**
+*   **原生流式 (Stream)**：基于 HTTP 分块传输，拒绝 "转圈等待"，体验如 ChatGPT 网页版般丝滑。
+*   **交互式卡片 (Card)**：支持 Button/Menu 交互回传，可构建审批、查询等复杂业务流 (Agent模式)。
+
+#### 2. 📎 **全模态支持 (Multi-Modal)**
+*   **发什么都能看**：支持接收图片、文件 (PDF/Doc/Zip)、语音 (自动转文字)、视频。
+*   **要什么都能给**：AI 生成的图表、代码文件、语音回复，均可自动上传并推送到企微。
+
+#### 3. 📢 **企业级触达 (Enterprise Reach)**
+*   **精准广播**：支持向 **部门 (Party)**、**标签 (Tag)** 或 **外部群** 批量推送消息。
+*   **Cronjob 集成**：通过简单的 JSON 配置实现早报推送、日报提醒、服务器报警。
+
+#### 4. 🛡 **生产级稳定 (Production Ready)**
+*   **容灾切换**：Bot 模式 6 分钟超时自动熔断，切换 Agent 私信送达，防止长任务回答丢失。
+*   **Token 自动运维**：内置 AccessToken 守护进程，自动缓存、提前刷新、过期重试。
+
+---
 
 <div align="center">
   <img src="https://cdn.jsdelivr.net/npm/@yanhaidao/wecom@latest/assets/01.image.jpg" width="45%" />
@@ -37,34 +51,16 @@
 
 
 
----
+## 📊 模式能力对比
 
-## 模式对比
-
-###  Bot vs Agent 你该选哪个？
-
-| 维度 | Bot 模式（智能体） | Agent 模式（自建应用） |
-|:---|:---|:---|
-| **接入方式** | 企微后台「智能机器人」 | 企微后台「自建应用」 |
-| **回调格式** | JSON 加密 | XML 加密 |
-| **回复机制** | response_url 被动回复 | API 主动发送 |
-| **流式支持** | ✅ 原生 stream 刷新 | ❌ 模拟分段 |
-| **主动推送** | ❌ 无法脱离回调 | ✅ 任意时机发送 |
-| **媒体能力** | 受限（URL 方式） | 完整（media_id） |
-| **被动回复图片** | ✅ 已实现 | ✅ 已实现 |
-| **Outbound 发图片** | ❌ API 不支持 | ✅ 已实现 |
-| **Outbound 发文本** | ❌ API 不支持 | ✅ 已实现 |
-| **适用场景** | 快速体验、轻量对话 | 企业级部署、业务集成 |
-
-> 💡 **推荐配置**：两种模式可同时启用！Bot 用于日常快速对话，Agent 用于主动通知和媒体发送。
-
-### 🧠 最佳实践策略：Bot 优先，Agent 兜底
-
-为了兼顾**流式响应体验**与**文件发送能力**，插件内部采用了以下自动策略：
-
-1.  **Bot 优先**：默认使用 Bot 通道，确保用户获得“打字机”式的实时响应体验。
-2.  **文件兜底**：当 AI 需要发送文件、视频等 Bot 不支持的格式时，自动切换到 Agent 通道进行推送。
-3.  **超时切换**：当 Bot 流式会话接近 **6 分钟**（企业微信限制）仍未结束时，系统会自动切换到 Agent 通道通过私信发送最终结果，防止连接中断。
+| 能力维度 | 🤖 Bot 模式 | 🧩 Agent 模式 | ✨ **本插件 (双模)** |
+|:---|:---:|:---:|:---:|
+| **流式响应** | ✅ 原生支持 | ❌ 不支持 | **✅ 完美支持** |
+| **发送文件/图** | ❌ 不支持 | ✅ 支持 | **✅ 自动切换** |
+| **主动推送** | ❌ 仅回调 | ✅ 随时推送 | **✅ 完整 API** |
+| **Cronjob 定时** | ❌ 仅回调 | ✅ 支持 | **✅ 完美集成** |
+| **接收语音** | ✅ 转文字 | ✅ 语音+文字 | **✅ 双路处理** |
+| **群聊支持** | ✅ @即回 | ⚠️ 仅自建群 | **✅ 混合支持** |
 
 ---
 
@@ -92,8 +88,9 @@ openclaw config set channels.wecom.bot.encodingAESKey "YOUR_BOT_AES_KEY"
 openclaw config set channels.wecom.bot.receiveId ""
 openclaw config set channels.wecom.bot.streamPlaceholderContent "正在思考..."
 openclaw config set channels.wecom.bot.welcomeText "你好！我是 AI 助手"
+
 # 不配置表示所有人可用，配置则进入白名单模式
-openclaw config set channels.wecom.bot.dm.allowFrom '["user1", "user2"]' 
+openclaw config set channels.wecom.bot.dm.allowFrom '[]' 
 ```
 
 ### 3. 配置 Agent 模式（自建应用，可选）
@@ -106,12 +103,19 @@ openclaw config set channels.wecom.agent.agentId 1000001
 openclaw config set channels.wecom.agent.token "YOUR_CALLBACK_TOKEN"
 openclaw config set channels.wecom.agent.encodingAESKey "YOUR_CALLBACK_AES_KEY"
 openclaw config set channels.wecom.agent.welcomeText "欢迎使用智能助手"
-openclaw config set channels.wecom.agent.dm.allowFrom '["user1", "user2"]'
-# 可选：如果你的公网出口 IP 不固定（例如内网穿透 / 动态 IP），可配置固定出口代理，避免企微报错 60020
+# 不配置表示所有人可用，配置则进入白名单模式
+openclaw config set channels.wecom.agent.dm.allowFrom '[]'
+```
+
+### 4. 高级网络配置 (公网出口代理)
+如果您的服务器使用 **动态 IP** (如家庭宽带、内网穿透) 或 **无公网 IP**，企业微信 API 会因 IP 变动报错 `60020 not allow to access from your ip`。
+此时需配置一个**固定 IP 的正向代理** (如 Squid)，让插件通过该代理访问企微 API。
+
+```bash
 openclaw config set channels.wecom.network.egressProxyUrl "http://proxy.company.local:3128"
 ```
 
-### 4. 验证
+### 5. 验证
 
 ```bash
 openclaw gateway restart
@@ -202,6 +206,11 @@ openclaw channels status
 6. 填写回调 URL：`https://your-domain.com/wecom/agent`
 7. 记录回调 Token 和 EncodingAESKey
 
+<div align="center">
+  <img src="https://cdn.jsdelivr.net/npm/@yanhaidao/wecom@latest/assets/03.bot.page.png" width="45%" alt="Bot Config" />
+  <img src="https://cdn.jsdelivr.net/npm/@yanhaidao/wecom@latest/assets/03.agent.page.png" width="45%" alt="Agent Config" />
+</div>
+
 ---
 
 ## 高级功能
@@ -215,19 +224,101 @@ Agent 输出 `{"template_card": ...}` 时自动渲染为交互卡片：
 - ✅ 自动去重：基于 `msgid` 避免重复处理
 - ⚠️ 群聊降级：自动转为文本描述
 
-### 富媒体处理
 
-| 类型 | Bot 模式 | Agent 模式 |
-|:---|:---|:---|
-| 图片 | ✅ URL 解密入模 | ✅ media_id 下载 |
-| 文件 | ✅ URL 解密入模 | ✅ media_id 下载 |
-| 语音 | ✅ 转文字入模 | ✅ 识别结果 + 原始音频 |
-| 视频 | ❌ | ✅ media_id 下载 |
 
-### DM 策略
+### ⏰ Cronjob 企业级定时推送
 
-- **不配置 `dm.allowFrom`** → 所有人可用（默认）
-- **配置 `dm.allowFrom: ["user1", "user2"]`** → 白名单模式，仅列表内用户可私聊
+本插件深度集成了 OpenClaw 的 Cronjob 调度能力，配合 Agent 强大的广播 API，轻松实现企业级通知服务。
+
+> **核心场景**：早报推送、服务器报警、日报提醒、节日祝福。
+
+#### 1. 目标配置 (Target)
+无需遍历用户列表，直接利用 Agent 强大的组织架构触达能力：
+
+| 目标类型 | 格式示例 | 推送范围 | 典型场景 |
+|:---|:---|:---|:---|
+| **部门 (Party)** | `party:1` (或 `1`) | 📢 **全员广播** | 全员通知、技术部周报 |
+| **标签 (Tag)** | `tag:Ops` | 🎯 **精准分组** | 运维报警、管理层汇报 |
+| **外部群 (Group)** | `group:wr...` | 💬 **群聊推送** | 项目组群日报 (需由Agent建群) |
+| **用户 (User)** | `user:zhangsan` | 👤 **即时私信** | 个人待办提醒 |
+
+#### 2. 配置示例 (`schedule.json`)
+
+只需在工作区根目录创建 `schedule.json` 即可生效：
+
+```json
+{
+  "tasks": [
+    {
+      "cron": "0 9 * * 1-5", // 每周一至周五 早上9:00
+      "action": "reply.send",
+      "params": {
+        "channel": "wecom",
+        "to": "party:1",      // 一键发送给根部门所有人！
+        "text": "🌞 早安！请查收[今日行业简报](https://example.com/daily)。"
+      }
+    },
+    {
+      "cron": "0 18 * * 5",
+      "action": "reply.send",
+      "params": {
+        "channel": "wecom",
+        "to": "tag:Ops",       // 仅发送给运维组
+        "text": "🔒 周五封网提醒：请检查服务器状态。"
+      }
+    }
+  ]
+}
+```
+
+
+
+---
+
+## 📖 详细行为说明 (Behavior Detail)
+
+### 1. 企业微信群聊交付规则
+
+*   **默认 (Bot 回复)**：群聊里 @Bot，默认由 Bot 在群内直接回复（优先文本/图片/Markdown）。
+*   **例外 (文件兜底)**：如果回复内容包含**非图片文件**（如 PDF/Word/表格/压缩包等），由于企微 Bot 接口不支持，插件会自动：
+    1.  Bot 在群里提示："由于格式限制，文件将通过私信发送给您"。
+    2.  无缝切换到 **自建应用 (Agent)** 通道，将文件私信发送给触发者。
+*   **提示**：若未配置 Agent，Bot 会明确提示“需要管理员配置自建应用通道”。
+
+### 2. 长任务可靠性保障
+
+*   **超时熔断**：企业微信限制 Bot 流式回复窗口约为 6 分钟。
+*   **自动接力**：当对话时长接近此阈值时，Monitor 会自动截断 Bot 流，提示 "剩余内容将私信发送"，并立即启动 Agent 通道私信发送完整结果。这彻底解决了长思考任务（如深度推理、代码生成）因超时导致用户收不到结果的问题。
+
+### 3. 主动发送安全机制
+
+*   **群发保护**：Agent 主动发送接口不再尝试向普通群 `chatid` (wr/wc...) 发消息（该路径常因权限与归属产生的隐蔽错误）。
+*   **引导提示**：系统会明确拦截并通过日志提示中文错误："请使用 Bot 群内交付或改为私信目标（userid/部门/标签）"，帮助管理员快速排查配置。
+
+### 4. 管理员友好
+
+*   所有兜底逻辑（Fallback）触发时，如果因配置缺失导致失败，Bot 都会给出清晰的**中文提示**，而不是沉默或报代码错误，极大降低了排查难度。
+
+---
+
+## 🙋 社区问答 (FAQ)
+
+针对社区反馈的高频问题，我们已在 v2.2.4 版本中全部解决：
+
+**Q1: 同时使用 Bot 和 Agent 会导致消息重复吗？**
+> **A:** 不会。本插件采用“Bot 优先”策略。用户在哪个通道发消息，就从哪个通道回。只有在 Bot 无法处理（如发文件）时才会智能切换到 Agent 通道作为补充。
+
+**Q2: 使用内网穿透时，企业微信报错 60020 (IP 不白名单) 怎么办？**
+> **A:** 新增了 `config.network.egressProxyUrl` 配置。您可以配置一个拥有固定公网 IP 的代理服务器（如 Squid），让插件通过该代理与企微 API 通信，从而绕过动态 IP 限制。
+
+**Q3: 原生 Bot 模式支持图片，为什么 Agent 模式不行？**
+> **A:** Agent 模式之前确实存在此短板。但在 v2.2.4 中，我们完整实现了 Agent 端的 XML 媒体解析与 `media_id` 下载逻辑，现在 Agent 模式也能完美看图、听语音了。
+
+**Q4: 群里 @机器人 发送文件失败？**
+> **A:** 因为企业微信 Bot 接口本身不支持发送非图片文件。我们的解决方案是：自动检测到文件发送需求后，改为通过 Agent 私信该用户发送文件，并在群里给出 "文件已私信发给您" 的提示。
+
+**Q5: Cronjob 定时任务怎么发给群？**
+> **A:** Cronjob 必须走 Agent 通道（Bot 无法主动发消息）。您只需在配置中指定 `to: "party:1"` (部门) 或 `to: "group:wr123..."` (外部群)，即可实现定时推送到群。
 
 ---
 
@@ -242,6 +333,14 @@ Agent 输出 `{"template_card": ...}` 时自动渲染为交互卡片：
 ---
 
 ## 更新日志
+
+### 2026.2.4
+
+- 🚀 **架构升级**：实施 "Bot 优先 + Agent 兜底" 策略，兼顾流式体验与长任务稳定性（6分钟切换）。
+- ✨ **全模态支持**：Agent 模式完整支持接收与发送图片、文件、语音、视频。
+- ✨ **Cronjob 增强**：支持向部门 (`party:ID`) 和标签 (`tag:ID`) 广播消息。
+- 🛠 **Monitor 重构**：统一的消息防抖与流状态管理，提升并发稳定性。
+- 🐞 **修复**：Outbound ID 解析逻辑及 API 客户端参数缺失问题。
 
 ### 2026.2.3
 

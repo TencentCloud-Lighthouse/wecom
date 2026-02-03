@@ -4,11 +4,7 @@ import { sendText as sendAgentText, sendMedia as sendAgentMedia, uploadMedia } f
 import { resolveWecomAccounts } from "./config/index.js";
 import { getWecomRuntime } from "./runtime.js";
 
-function normalizeWecomOutboundTarget(raw: string | undefined): string | undefined {
-  const trimmed = raw?.trim() ?? "";
-  if (!trimmed) return undefined;
-  return trimmed.replace(/^(wecom|wechatwork|wework|qywx):/i, "").trim() || undefined;
-}
+import { resolveWecomTarget } from "./target.js";
 
 function resolveAgentConfigOrThrow(cfg: ChannelOutboundContext["cfg"]) {
   const account = resolveWecomAccounts(cfg).agent;
@@ -17,8 +13,8 @@ function resolveAgentConfigOrThrow(cfg: ChannelOutboundContext["cfg"]) {
       "WeCom outbound requires Agent mode. Configure channels.wecom.agent (corpId/corpSecret/agentId/token/encodingAESKey).",
     );
   }
-  // DEBUG: 输出使用的 Agent 配置信息
-  console.log(`[wecom-outbound] Using agent config: corpId=${account.corpId}, agentId=${account.agentId}, corpSecret=${account.corpSecret?.slice(0, 8)}...`);
+  // 注意：不要在日志里输出 corpSecret 等敏感信息
+  console.log(`[wecom-outbound] Using agent config: corpId=${account.corpId}, agentId=${account.agentId}`);
   return account;
 }
 
@@ -37,24 +33,33 @@ export const wecomOutbound: ChannelOutboundAdapter = {
     // signal removed - not supported in current SDK
 
     const agent = resolveAgentConfigOrThrow(cfg);
-    const targetId = normalizeWecomOutboundTarget(to);
-    if (!targetId) {
-      throw new Error("WeCom outbound requires a target (userid or chatid).");
+    const target = resolveWecomTarget(to);
+    if (!target) {
+      throw new Error("WeCom outbound requires a target (userid, partyid, tagid or chatid).");
     }
 
-    const isChat = /^(wr|wc)/i.test(targetId);
-    console.log(`[wecom-outbound] Sending text to ${targetId} (isChat=${isChat}, len=${text.length})`);
+    const { touser, toparty, totag, chatid } = target;
+    if (chatid) {
+      throw new Error(
+        `企业微信（WeCom）Agent 主动发送不支持向群 chatId 发送（chatId=${chatid}）。` +
+          `该路径在实际环境中经常失败（例如 86008：无权限访问该会话/会话由其他应用创建）。` +
+          `请改为发送给用户（userid / user:xxx），或由 Bot 模式在群内交付。`,
+      );
+    }
+    console.log(`[wecom-outbound] Sending text to target=${JSON.stringify(target)} (len=${text.length})`);
 
     try {
       await sendAgentText({
         agent,
-        toUser: isChat ? undefined : targetId,
-        chatId: isChat ? targetId : undefined,
+        toUser: touser,
+        toParty: toparty,
+        toTag: totag,
+        chatId: chatid,
         text,
       });
-      console.log(`[wecom-outbound] Successfully sent text to ${targetId}`);
+      console.log(`[wecom-outbound] Successfully sent text to ${JSON.stringify(target)}`);
     } catch (err) {
-      console.error(`[wecom-outbound] Failed to send text to ${targetId}:`, err);
+      console.error(`[wecom-outbound] Failed to send text to ${JSON.stringify(target)}:`, err);
       throw err;
     }
 
@@ -68,9 +73,16 @@ export const wecomOutbound: ChannelOutboundAdapter = {
     // signal removed - not supported in current SDK
 
     const agent = resolveAgentConfigOrThrow(cfg);
-    const targetId = normalizeWecomOutboundTarget(to);
-    if (!targetId) {
-      throw new Error("WeCom outbound requires a target (userid or chatid).");
+    const target = resolveWecomTarget(to);
+    if (!target) {
+      throw new Error("WeCom outbound requires a target (userid, partyid, tagid or chatid).");
+    }
+    if (target.chatid) {
+      throw new Error(
+        `企业微信（WeCom）Agent 主动发送不支持向群 chatId 发送（chatId=${target.chatid}）。` +
+          `该路径在实际环境中经常失败（例如 86008：无权限访问该会话/会话由其他应用创建）。` +
+          `请改为发送给用户（userid / user:xxx），或由 Bot 模式在群内交付。`,
+      );
     }
     if (!mediaUrl) {
       throw new Error("WeCom outbound requires mediaUrl.");
@@ -125,14 +137,16 @@ export const wecomOutbound: ChannelOutboundAdapter = {
       filename,
     });
 
-    const isChat = /^(wr|wc)/i.test(targetId);
-    console.log(`[wecom-outbound] Sending media (${mediaType}) to ${targetId} (isChat=${isChat}, mediaId=${mediaId})`);
+    const { touser, toparty, totag, chatid } = target;
+    console.log(`[wecom-outbound] Sending media (${mediaType}) to ${JSON.stringify(target)} (mediaId=${mediaId})`);
 
     try {
       await sendAgentMedia({
         agent,
-        toUser: isChat ? undefined : targetId,
-        chatId: isChat ? targetId : undefined,
+        toUser: touser,
+        toParty: toparty,
+        toTag: totag,
+        chatId: chatid,
         mediaId,
         mediaType,
         ...(mediaType === "video" && text?.trim()
@@ -142,9 +156,9 @@ export const wecomOutbound: ChannelOutboundAdapter = {
           }
           : {}),
       });
-      console.log(`[wecom-outbound] Successfully sent media to ${targetId}`);
+      console.log(`[wecom-outbound] Successfully sent media to ${JSON.stringify(target)}`);
     } catch (err) {
-      console.error(`[wecom-outbound] Failed to send media to ${targetId}:`, err);
+      console.error(`[wecom-outbound] Failed to send media to ${JSON.stringify(target)}:`, err);
       throw err;
     }
 
