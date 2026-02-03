@@ -9,13 +9,26 @@ import type { ResolvedAgentAccount } from "../types/index.js";
 import { LIMITS } from "../types/constants.js";
 import { decryptWecomEncrypted, verifyWecomSignature, computeWecomMsgSignature, encryptWecomPlaintext } from "../crypto/index.js";
 import { extractEncryptFromXml, buildEncryptedXmlResponse } from "../crypto/xml.js";
-import { parseXml, extractMsgType, extractFromUser, extractContent, extractChatId } from "../shared/xml-parser.js";
-import { sendText } from "./api-client.js";
+import { parseXml, extractMsgType, extractFromUser, extractContent, extractChatId, extractMediaId } from "../shared/xml-parser.js";
+import { sendText, downloadMedia } from "./api-client.js";
 import { getWecomRuntime } from "../runtime.js";
+import type { WecomAgentInboundMessage } from "../types/index.js";
 
 /** 错误提示信息 */
 const ERROR_HELP = "\n\n遇到问题？联系作者: YanHaidao (微信: YanHaidao)";
 
+/**
+ * **AgentWebhookParams (Webhook 处理器参数)**
+ * 
+ * 传递给 Agent Webhook 处理函数的上下文参数集合。
+ * @property req Node.js 原始请求对象
+ * @property res Node.js 原始响应对象
+ * @property agent 解析后的 Agent 账号信息
+ * @property config 全局插件配置
+ * @property core OpenClaw 插件运行时
+ * @property log 可选日志输出函数
+ * @property error 可选错误输出函数
+ */
 export type AgentWebhookParams = {
     req: IncomingMessage;
     res: ServerResponse;
@@ -27,7 +40,9 @@ export type AgentWebhookParams = {
 };
 
 /**
- * 解析查询参数
+ * **resolveQueryParams (解析查询参数)**
+ * 
+ * 辅助函数：从 IncomingMessage 中解析 URL 查询字符串，用于获取签名、时间戳等参数。
  */
 function resolveQueryParams(req: IncomingMessage): URLSearchParams {
     const url = new URL(req.url ?? "/", "http://localhost");
@@ -35,7 +50,10 @@ function resolveQueryParams(req: IncomingMessage): URLSearchParams {
 }
 
 /**
- * 读取原始请求体
+ * **readRawBody (读取原始请求体)**
+ * 
+ * 异步读取 HTTP POST 请求的原始 BODY 数据（XML 字符串）。
+ * 包含最大体积限制检查，防止内存溢出攻击。
  */
 async function readRawBody(req: IncomingMessage, maxSize: number = LIMITS.MAX_REQUEST_BODY_SIZE): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -61,7 +79,13 @@ async function readRawBody(req: IncomingMessage, maxSize: number = LIMITS.MAX_RE
 }
 
 /**
- * 处理 URL 验证 (GET)
+ * **handleUrlVerification (处理 URL 验证)**
+ * 
+ * 处理企业微信 Agent 配置时的 GET 请求验证。
+ * 流程：
+ * 1. 验证 msg_signature 签名。
+ * 2. 解密 echostr 参数。
+ * 3. 返回解密后的明文 echostr。
  */
 async function handleUrlVerification(
     req: IncomingMessage,
@@ -168,6 +192,7 @@ async function handleMessageCallback(params: AgentWebhookParams): Promise<boolea
             chatId,
             msgType,
             content,
+            msg,
             log,
             error,
         }).catch((err) => {
@@ -185,7 +210,15 @@ async function handleMessageCallback(params: AgentWebhookParams): Promise<boolea
 }
 
 /**
- * 处理 Agent 消息 (调用 OpenClaw Agent)
+ * **processAgentMessage (处理 Agent 消息)**
+ * 
+ * 异步处理解密后的消息内容，并触发 OpenClaw Agent。
+ * 流程：
+ * 1. 路由解析：根据 userid或群ID 确定 Agent 路由。
+ * 2. 媒体处理：如果是图片/文件等，下载资源。
+ * 3. 上下文构建：创建 Inbound Context。
+ * 4. 会话记录：更新 Session 状态。
+ * 5. 调度回复：将 Agent 的响应通过 `api-client` 发送回企业微信。
  */
 async function processAgentMessage(params: {
     agent: ResolvedAgentAccount;
@@ -195,13 +228,51 @@ async function processAgentMessage(params: {
     chatId?: string;
     msgType: string;
     content: string;
+    msg: WecomAgentInboundMessage;
     log?: (msg: string) => void;
     error?: (msg: string) => void;
 }): Promise<void> {
-    const { agent, config, core, fromUser, chatId, content, log, error } = params;
+    const { agent, config, core, fromUser, chatId, content, msg, msgType, log, error } = params;
 
     const isGroup = Boolean(chatId);
     const peerId = isGroup ? chatId! : fromUser;
+
+    // 处理媒体文件
+    const attachments: any[] = []; // TODO: define specific type
+    let finalContent = content;
+
+    if (["image", "voice", "video", "file"].includes(msgType)) {
+        const mediaId = extractMediaId(msg);
+        if (mediaId) {
+            try {
+                log?.(`[wecom-agent] downloading media: ${mediaId} (${msgType})`);
+                const { buffer, contentType } = await downloadMedia({ agent, mediaId });
+                
+                // 推断文件名后缀
+                const extMap: Record<string, string> = {
+                    "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif",
+                    "audio/amr": "amr", "audio/speex": "speex", "video/mp4": "mp4",
+                };
+                const ext = extMap[contentType] || "bin";
+                const filename = `${mediaId}.${ext}`;
+
+                // 构建附件
+                attachments.push({
+                    name: filename,
+                    mimeType: contentType,
+                    data: buffer.toString("base64"), // OpenClaw 通常接受 Base64
+                });
+
+                // 更新文本提示，避免仅仅是 "[图片]"
+                finalContent = `${content} (已下载 ${buffer.length} 字节)`;
+            } catch (err) {
+                error?.(`[wecom-agent] media download failed: ${String(err)}`);
+                finalContent = `${content} (媒体下载失败)`;
+            }
+        } else {
+            error?.(`[wecom-agent] mediaId not found for ${msgType}`);
+        }
+    }
 
     // 解析路由
     const route = core.channel.routing.resolveAgentRoute({
@@ -226,13 +297,14 @@ async function processAgentMessage(params: {
         from: fromLabel,
         previousTimestamp,
         envelope: envelopeOptions,
-        body: content,
+        body: finalContent,
     });
 
     const ctxPayload = core.channel.reply.finalizeInboundContext({
         Body: body,
-        RawBody: content,
-        CommandBody: content,
+        RawBody: finalContent,
+        CommandBody: finalContent,
+        Attachments: attachments.length > 0 ? attachments : undefined,
         From: isGroup ? `wecom:group:${peerId}` : `wecom:${fromUser}`,
         To: `wecom:${peerId}`,
         SessionKey: route.sessionKey,
@@ -290,7 +362,10 @@ async function processAgentMessage(params: {
 }
 
 /**
- * 处理 Agent Webhook 请求入口
+ * **handleAgentWebhook (Agent Webhook 入口)**
+ * 
+ * 统一处理 Agent 模式的 Webhook 请求。
+ * 根据 HTTP 方法分发到 URL 验证 (GET) 或 消息处理 (POST)。
  */
 export async function handleAgentWebhook(params: AgentWebhookParams): Promise<boolean> {
     const { req } = params;

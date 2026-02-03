@@ -75,3 +75,11 @@ export function extractContent(msg: WecomAgentInboundMessage): string {
             return `[${msgType || "未知消息类型"}]`;
     }
 }
+
+/**
+ * 从 XML 中提取媒体 ID (Image, Voice, Video)
+ * 根据官方文档，MediaId 在 Agent 回调中直接位于根节点
+ */
+export function extractMediaId(msg: WecomAgentInboundMessage): string | undefined {
+    return msg.MediaId ? String(msg.MediaId) : undefined;
+}

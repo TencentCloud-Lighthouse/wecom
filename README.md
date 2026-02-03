@@ -58,6 +58,14 @@
 
 > 💡 **推荐配置**：两种模式可同时启用！Bot 用于日常快速对话，Agent 用于主动通知和媒体发送。
 
+### 🧠 最佳实践策略：Bot 优先，Agent 兜底
+
+为了兼顾**流式响应体验**与**文件发送能力**，插件内部采用了以下自动策略：
+
+1.  **Bot 优先**：默认使用 Bot 通道，确保用户获得“打字机”式的实时响应体验。
+2.  **文件兜底**：当 AI 需要发送文件、视频等 Bot 不支持的格式时，自动切换到 Agent 通道进行推送。
+3.  **超时切换**：当 Bot 流式会话接近 **6 分钟**（企业微信限制）仍未结束时，系统会自动切换到 Agent 通道通过私信发送最终结果，防止连接中断。
+
 ---
 
 ## 快速开始
@@ -99,6 +107,8 @@ openclaw config set channels.wecom.agent.token "YOUR_CALLBACK_TOKEN"
 openclaw config set channels.wecom.agent.encodingAESKey "YOUR_CALLBACK_AES_KEY"
 openclaw config set channels.wecom.agent.welcomeText "欢迎使用智能助手"
 openclaw config set channels.wecom.agent.dm.allowFrom '["user1", "user2"]'
+# 可选：如果你的公网出口 IP 不固定（例如内网穿透 / 动态 IP），可配置固定出口代理，避免企微报错 60020
+openclaw config set channels.wecom.network.egressProxyUrl "http://proxy.company.local:3128"
 ```
 
 ### 4. 验证
@@ -139,6 +149,11 @@ openclaw channels status
         "encodingAESKey": "YOUR_CALLBACK_AES_KEY",
         "welcomeText": "欢迎使用智能助手",
         "dm": { "allowFrom": [] }
+      },
+
+      // 网络配置（可选）
+      "network": {
+        "egressProxyUrl": "http://proxy.company.local:3128"
       }
     }
   }
@@ -182,6 +197,7 @@ openclaw channels status
 2. 进入「应用管理」→「自建」→ 创建应用
 3. 获取 AgentId、CorpId、Secret
 4. **重要：** 进入「企业可信IP」→「配置」→ 添加你服务器的 IP 地址
+   - 如果你使用内网穿透/动态 IP，建议配置 `channels.wecom.network.egressProxyUrl` 走固定出口代理，否则可能出现：`60020 not allow to access from your ip`
 5. 在应用详情中设置「接收消息 - 设置API接收」
 6. 填写回调 URL：`https://your-domain.com/wecom/agent`
 7. 记录回调 Token 和 EncodingAESKey
@@ -231,6 +247,7 @@ Agent 输出 `{"template_card": ...}` 时自动渲染为交互卡片：
 
 - 🎉 **重大更新**：新增 Agent 模式（自建应用）支持
 - ✨ 双模式并行：Bot + Agent 可同时运行
+- ✨ **多模态支持**：Agent 模式支持图片/语音/文件/视频的接收与自动下载
 - ✨ AccessToken 自动管理：缓存 + 智能刷新
 - ✨ Agent 主动推送：脱离回调限制
 - ✨ XML 加解密：完整 Agent 回调支持

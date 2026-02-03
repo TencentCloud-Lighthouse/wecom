@@ -1,10 +1,17 @@
 import { describe, it, expect, vi } from "vitest";
 import { decryptWecomMedia } from "./media.js";
 import { WECOM_PKCS7_BLOCK_SIZE } from "./crypto.js";
-import axios from "axios";
 import crypto from "node:crypto";
 
-vi.mock("axios");
+const { undiciFetch } = vi.hoisted(() => {
+    const undiciFetch = vi.fn();
+    return { undiciFetch };
+});
+
+vi.mock("undici", () => ({
+    fetch: undiciFetch,
+    ProxyAgent: class ProxyAgent { },
+}));
 
 function pkcs7Pad(buf: Buffer, blockSize: number): Buffer {
     const mod = buf.length % blockSize;
@@ -28,19 +35,18 @@ describe("decryptWecomMedia", () => {
         cipher.setAutoPadding(false);
         const encrypted = Buffer.concat([cipher.update(padded), cipher.final()]);
 
-        // 3. Mock Axios
-        (axios.get as any).mockResolvedValue({
-            data: encrypted,
-        });
+        // 3. Mock HTTP fetch
+        undiciFetch.mockResolvedValue(new Response(encrypted));
 
         // 4. Test
         const decrypted = await decryptWecomMedia("http://mock.url/image", aesKeyBase64);
 
         // 5. Assert
         expect(decrypted.toString("utf8")).toBe("Hello WeCom Image Data");
-        expect(axios.get).toHaveBeenCalledWith("http://mock.url/image", expect.objectContaining({
-            responseType: "arraybuffer"
-        }));
+        expect(undiciFetch).toHaveBeenCalledWith(
+            "http://mock.url/image",
+            expect.objectContaining({ signal: expect.anything() }),
+        );
     });
 
     it("should fail if key is invalid", async () => {

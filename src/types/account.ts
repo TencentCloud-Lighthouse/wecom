@@ -2,7 +2,7 @@
  * WeCom 账号类型定义
  */
 
-import type { WecomBotConfig, WecomAgentConfig, WecomDmConfig } from "./config.js";
+import type { WecomBotConfig, WecomAgentConfig, WecomDmConfig, WecomNetworkConfig } from "./config.js";
 
 /**
  * 解析后的 Bot 账号
@@ -22,6 +22,8 @@ export type ResolvedBotAccount = {
     receiveId: string;
     /** 原始配置 */
     config: WecomBotConfig;
+    /** 网络配置（来自 channels.wecom.network） */
+    network?: WecomNetworkConfig;
 };
 
 /**
@@ -46,6 +48,8 @@ export type ResolvedAgentAccount = {
     encodingAESKey: string;
     /** 原始配置 */
     config: WecomAgentConfig;
+    /** 网络配置（来自 channels.wecom.network） */
+    network?: WecomNetworkConfig;
 };
 
 /**

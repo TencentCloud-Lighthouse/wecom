@@ -43,6 +43,12 @@ type ResolvedWecomAccount = {
   agent?: ResolvedAgentAccount;
 };
 
+/**
+ * **resolveWecomAccount (解析账号配置)**
+ * 
+ * 从全局配置中解析出 WeCom 渠道的配置状态。
+ * 兼容 Bot 和 Agent 两种模式的配置检查。
+ */
 function resolveWecomAccount(cfg: OpenClawConfig): ResolvedWecomAccount {
   const enabled = (cfg.channels?.wecom as { enabled?: boolean } | undefined)?.enabled !== false;
   const accounts = resolveWecomAccounts(cfg);
@@ -169,6 +175,17 @@ export const wecomPlugin: ChannelPlugin<ResolvedWecomAccount> = {
     }),
   },
   gateway: {
+    /**
+     * **startAccount (启动账号)**
+     * 
+     * 插件生命周期：启动
+     * 职责：
+     * 1. 检查配置是否有效。
+     * 2. 注册 Bot Webhook (`/wecom`, `/wecom/bot`)。
+     * 3. 注册 Agent Webhook (`/wecom/agent`)。
+     * 4. 更新运行时状态 (Running)。
+     * 5. 返回停止回调 (Cleanup)。
+     */
     startAccount: async (ctx) => {
       const account = ctx.account;
       const bot = account.bot;

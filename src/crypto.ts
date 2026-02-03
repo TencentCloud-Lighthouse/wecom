@@ -1,5 +1,11 @@
 import crypto from "node:crypto";
 
+/**
+ * **decodeEncodingAESKey (解码 AES Key)**
+ * 
+ * 将企业微信配置的 Base64 编码的 AES Key 解码为 Buffer。
+ * 包含补全 Padding 和长度校验 (必须32字节)。
+ */
 export function decodeEncodingAESKey(encodingAESKey: string): Buffer {
   const trimmed = encodingAESKey.trim();
   if (!trimmed) throw new Error("encodingAESKey missing");
@@ -22,6 +28,12 @@ function pkcs7Pad(buf: Buffer, blockSize: number): Buffer {
   return Buffer.concat([buf, Buffer.alloc(pad, padByte[0]!)]);
 }
 
+/**
+ * **pkcs7Unpad (去除 PKCS#7 填充)**
+ * 
+ * 移除 AES 解密后的 PKCS#7 填充字节。
+ * 包含填充合法性校验。
+ */
 export function pkcs7Unpad(buf: Buffer, blockSize: number): Buffer {
   if (buf.length === 0) throw new Error("invalid pkcs7 payload");
   const pad = buf[buf.length - 1]!;
@@ -44,6 +56,11 @@ function sha1Hex(input: string): string {
   return crypto.createHash("sha1").update(input).digest("hex");
 }
 
+/**
+ * **computeWecomMsgSignature (计算消息签名)**
+ * 
+ * 算法：sha1(sort(token, timestamp, nonce, encrypt_msg))
+ */
 export function computeWecomMsgSignature(params: {
   token: string;
   timestamp: string;
@@ -56,6 +73,11 @@ export function computeWecomMsgSignature(params: {
   return sha1Hex(parts.join(""));
 }
 
+/**
+ * **verifyWecomSignature (验证消息签名)**
+ * 
+ * 比较计算出的签名与企业微信传入的签名是否一致。
+ */
 export function verifyWecomSignature(params: {
   token: string;
   timestamp: string;
@@ -72,6 +94,17 @@ export function verifyWecomSignature(params: {
   return expected === params.signature;
 }
 
+/**
+ * **decryptWecomEncrypted (解密企业微信消息)**
+ * 
+ * 将企业微信的 AES 加密包解密为明文。
+ * 流程：
+ * 1. Base64 解码 AESKey 并获取 IV (前16字节)。
+ * 2. AES-CBC 解密。
+ * 3. 去除 PKCS#7 填充。
+ * 4. 拆解协议包结构: [16字节随机串][4字节长度][消息体][接收者ID]。
+ * 5. 校验接收者ID (ReceiveId)。
+ */
 export function decryptWecomEncrypted(params: {
   encodingAESKey: string;
   receiveId?: string;
@@ -111,6 +144,16 @@ export function decryptWecomEncrypted(params: {
   return msg;
 }
 
+/**
+ * **encryptWecomPlaintext (加密回复消息)**
+ * 
+ * 将明文消息打包为企业微信的加密格式。
+ * 流程：
+ * 1. 构造协议包: [16字节随机串][4字节长度][消息体][接收者ID]。
+ * 2. PKCS#7 填充。
+ * 3. AES-CBC 加密。
+ * 4. 转 Base64。
+ */
 export function encryptWecomPlaintext(params: {
   encodingAESKey: string;
   receiveId?: string;

@@ -30,7 +30,7 @@ function setWecomEnabled(cfg: OpenClawConfig, enabled: boolean): OpenClawConfig 
         channels: {
             ...cfg.channels,
             wecom: {
-                ...cfg.channels?.wecom,
+                ...(cfg.channels?.wecom ?? {}),
                 enabled,
             },
         },
@@ -43,7 +43,7 @@ function setWecomBotConfig(cfg: OpenClawConfig, bot: WecomBotConfig): OpenClawCo
         channels: {
             ...cfg.channels,
             wecom: {
-                ...cfg.channels?.wecom,
+                ...(cfg.channels?.wecom ?? {}),
                 enabled: true,
                 bot,
             },
@@ -57,7 +57,7 @@ function setWecomAgentConfig(cfg: OpenClawConfig, agent: WecomAgentConfig): Open
         channels: {
             ...cfg.channels,
             wecom: {
-                ...cfg.channels?.wecom,
+                ...(cfg.channels?.wecom ?? {}),
                 enabled: true,
                 agent,
             },

@@ -2,12 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sendActiveMessage, handleWecomWebhookRequest, registerWecomWebhookTarget } from "./monitor.js";
 import * as cryptoHelpers from "./crypto.js";
 import * as runtime from "./runtime.js";
-import axios from "axios";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 import * as crypto from "node:crypto";
 
-vi.mock("axios");
+const { undiciFetch } = vi.hoisted(() => {
+    const undiciFetch = vi.fn();
+    return { undiciFetch };
+});
+
+vi.mock("undici", () => ({
+    fetch: undiciFetch,
+    ProxyAgent: class ProxyAgent { },
+}));
 
 // Helpers
 function createMockRequest(bodyObj: any): IncomingMessage {
@@ -146,11 +153,16 @@ describe("Monitor Active Features", () => {
 
         const streamId = Buffer.alloc(16, 0x11).toString("hex");
 
+        undiciFetch.mockResolvedValue(new Response("ok", { status: 200 }));
         await sendActiveMessage(streamId, "Active Hello");
 
-        expect(axios.post).toHaveBeenCalledWith(
+        expect(undiciFetch).toHaveBeenCalledWith(
             "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key",
-            { msgtype: "text", text: { content: "Active Hello" } }
+            expect.objectContaining({
+                method: "POST",
+                headers: expect.objectContaining({ "Content-Type": "application/json" }),
+                body: JSON.stringify({ msgtype: "text", text: { content: "Active Hello" } }),
+            }),
         );
     });
 });

@@ -8,3 +8,4 @@ export {
     resolveWecomAccounts,
     isWecomEnabled,
 } from "./accounts.js";
+export { resolveWecomEgressProxyUrl, resolveWecomEgressProxyUrlFromNetwork } from "./network.js";

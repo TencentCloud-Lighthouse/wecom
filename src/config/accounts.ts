@@ -7,6 +7,7 @@ import type {
     WecomConfig,
     WecomBotConfig,
     WecomAgentConfig,
+    WecomNetworkConfig,
     ResolvedBotAccount,
     ResolvedAgentAccount,
     ResolvedMode,
@@ -50,7 +51,7 @@ function resolveBotAccount(config: WecomBotConfig): ResolvedBotAccount {
 /**
  * 解析 Agent 模式账号
  */
-function resolveAgentAccount(config: WecomAgentConfig): ResolvedAgentAccount {
+function resolveAgentAccount(config: WecomAgentConfig, network?: WecomNetworkConfig): ResolvedAgentAccount {
     const agentIdRaw = config.agentId;
     const agentId = typeof agentIdRaw === "number" ? agentIdRaw : Number(agentIdRaw);
 
@@ -67,6 +68,7 @@ function resolveAgentAccount(config: WecomAgentConfig): ResolvedAgentAccount {
         token: config.token,
         encodingAESKey: config.encodingAESKey,
         config,
+        network,
     };
 }
 
@@ -83,8 +85,8 @@ export function resolveWecomAccounts(cfg: OpenClawConfig): ResolvedWecomAccounts
     const mode = detectMode(wecom);
 
     return {
-        bot: mode.bot && wecom.bot ? resolveBotAccount(wecom.bot) : undefined,
-        agent: mode.agent && wecom.agent ? resolveAgentAccount(wecom.agent) : undefined,
+        bot: mode.bot && wecom.bot ? { ...resolveBotAccount(wecom.bot), network: wecom.network } : undefined,
+        agent: mode.agent && wecom.agent ? resolveAgentAccount(wecom.agent, wecom.network) : undefined,
     };
 }
 

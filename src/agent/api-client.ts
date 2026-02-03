@@ -6,7 +6,17 @@
 import crypto from "node:crypto";
 import { API_ENDPOINTS, LIMITS } from "../types/constants.js";
 import type { ResolvedAgentAccount } from "../types/index.js";
+import { readResponseBodyAsBuffer, wecomFetch } from "../http.js";
+import { resolveWecomEgressProxyUrlFromNetwork } from "../config/index.js";
 
+/**
+ * **TokenCache (AccessToken 缓存结构)**
+ * 
+ * 用于缓存企业微信 API 调用所需的 AccessToken。
+ * @property token 缓存的 Token 字符串
+ * @property expiresAt 过期时间戳 (ms)
+ * @property refreshPromise 当前正在进行的刷新 Promise (防止并发刷新)
+ */
 type TokenCache = {
     token: string;
     expiresAt: number;
@@ -16,7 +26,13 @@ type TokenCache = {
 const tokenCaches = new Map<string, TokenCache>();
 
 /**
- * 获取 AccessToken (带缓存)
+ * **getAccessToken (获取 AccessToken)**
+ * 
+ * 获取企业微信 API 调用所需的 AccessToken。
+ * 具备自动缓存和过期刷新机制。
+ * 
+ * @param agent Agent 账号信息
+ * @returns 有效的 AccessToken
  */
 export async function getAccessToken(agent: ResolvedAgentAccount): Promise<string> {
     const cacheKey = `${agent.corpId}:${agent.agentId}`;
@@ -40,7 +56,7 @@ export async function getAccessToken(agent: ResolvedAgentAccount): Promise<strin
     cache.refreshPromise = (async () => {
         try {
             const url = `${API_ENDPOINTS.GET_TOKEN}?corpid=${encodeURIComponent(agent.corpId)}&corpsecret=${encodeURIComponent(agent.corpSecret)}`;
-            const res = await fetch(url, { signal: AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS) });
+            const res = await wecomFetch(url, undefined, { proxyUrl: resolveWecomEgressProxyUrlFromNetwork(agent.network), timeoutMs: LIMITS.REQUEST_TIMEOUT_MS });
             const json = await res.json() as { access_token?: string; expires_in?: number; errcode?: number; errmsg?: string };
 
             if (!json?.access_token) {
@@ -59,7 +75,14 @@ export async function getAccessToken(agent: ResolvedAgentAccount): Promise<strin
 }
 
 /**
- * 发送文本消息
+ * **sendText (发送文本消息)**
+ * 
+ * 调用 `message/send` (Agent) 或 `appchat/send` (群聊) 发送文本。
+ * 
+ * @param params.agent 发送方 Agent
+ * @param params.toUser 接收用户 ID (单聊必填)
+ * @param params.chatId 接收群 ID (群聊必填)
+ * @param params.text 消息内容
  */
 export async function sendText(params: {
     agent: ResolvedAgentAccount;
@@ -79,12 +102,11 @@ export async function sendText(params: {
         ? { chatid: chatId, msgtype: "text", text: { content: text } }
         : { touser: toUser, msgtype: "text", agentid: agent.agentId, text: { content: text } };
 
-    const res = await fetch(url, {
+    const res = await wecomFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS),
-    });
+    }, { proxyUrl: resolveWecomEgressProxyUrlFromNetwork(agent.network), timeoutMs: LIMITS.REQUEST_TIMEOUT_MS });
     const json = await res.json() as { errcode?: number; errmsg?: string };
 
     if (json?.errcode !== 0) {
@@ -93,7 +115,15 @@ export async function sendText(params: {
 }
 
 /**
- * 上传媒体文件
+ * **uploadMedia (上传媒体文件)**
+ * 
+ * 上传临时素材到企业微信。
+ * 素材有效期为 3 天。
+ * 
+ * @param params.type 媒体类型 (image, voice, video, file)
+ * @param params.buffer 文件二进制数据
+ * @param params.filename 文件名 (需包含正确扩展名)
+ * @returns 媒体 ID (media_id)
  */
 export async function uploadMedia(params: {
     agent: ResolvedAgentAccount;
@@ -132,15 +162,14 @@ export async function uploadMedia(params: {
 
     console.log(`[wecom-upload] Multipart body size=${body.length}, boundary=${boundary}, fileContentType=${fileContentType}`);
 
-    const res = await fetch(url, {
+    const res = await wecomFetch(url, {
         method: "POST",
         headers: {
             "Content-Type": `multipart/form-data; boundary=${boundary}`,
             "Content-Length": String(body.length),
         },
         body: body,
-        signal: AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS),
-    });
+    }, { proxyUrl: resolveWecomEgressProxyUrlFromNetwork(agent.network), timeoutMs: LIMITS.REQUEST_TIMEOUT_MS });
     const json = await res.json() as { media_id?: string; errcode?: number; errmsg?: string };
 
     // DEBUG: 输出完整响应
@@ -153,7 +182,13 @@ export async function uploadMedia(params: {
 }
 
 /**
- * 发送媒体消息
+ * **sendMedia (发送媒体消息)**
+ * 
+ * 发送图片、音频、视频或文件。需先通过 `uploadMedia` 获取 media_id。
+ * 
+ * @param params.agent 发送方 Agent
+ * @param params.mediaId 媒体 ID
+ * @param params.mediaType 媒体类型
  */
 export async function sendMedia(params: {
     agent: ResolvedAgentAccount;
@@ -180,12 +215,11 @@ export async function sendMedia(params: {
         ? { chatid: chatId, msgtype: mediaType, [mediaType]: mediaPayload }
         : { touser: toUser, msgtype: mediaType, agentid: agent.agentId, [mediaType]: mediaPayload };
 
-    const res = await fetch(url, {
+    const res = await wecomFetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS),
-    });
+    }, { proxyUrl: resolveWecomEgressProxyUrlFromNetwork(agent.network), timeoutMs: LIMITS.REQUEST_TIMEOUT_MS });
     const json = await res.json() as { errcode?: number; errmsg?: string };
 
     if (json?.errcode !== 0) {
@@ -194,7 +228,11 @@ export async function sendMedia(params: {
 }
 
 /**
- * 下载媒体文件
+ * **downloadMedia (下载媒体文件)**
+ * 
+ * 通过 media_id 从企业微信服务器下载临时素材。
+ * 
+ * @returns { buffer, contentType }
  */
 export async function downloadMedia(params: {
     agent: ResolvedAgentAccount;
@@ -204,9 +242,7 @@ export async function downloadMedia(params: {
     const token = await getAccessToken(agent);
     const url = `${API_ENDPOINTS.DOWNLOAD_MEDIA}?access_token=${encodeURIComponent(token)}&media_id=${encodeURIComponent(mediaId)}`;
 
-    const res = await fetch(url, {
-        signal: AbortSignal.timeout(LIMITS.REQUEST_TIMEOUT_MS),
-    });
+    const res = await wecomFetch(url, undefined, { proxyUrl: resolveWecomEgressProxyUrlFromNetwork(agent.network), timeoutMs: LIMITS.REQUEST_TIMEOUT_MS });
 
     if (!res.ok) {
         throw new Error(`download failed: ${res.status}`);
@@ -220,6 +256,6 @@ export async function downloadMedia(params: {
         throw new Error(`download failed: ${json?.errcode} ${json?.errmsg}`);
     }
 
-    const buffer = Buffer.from(await res.arrayBuffer());
+    const buffer = await readResponseBodyAsBuffer(res);
     return { buffer, contentType };
 }

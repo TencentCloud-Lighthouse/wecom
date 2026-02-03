@@ -4,6 +4,8 @@
 
 /** DM 策略配置 - 与其他渠道保持一致，仅用 allowFrom */
 export type WecomDmConfig = {
+    /** DM 策略: 'open' 允许所有人, 'pairing' 需要配对, 'allowlist' 仅允许列表, 'disabled' 禁用 */
+    policy?: 'open' | 'pairing' | 'allowlist' | 'disabled';
     /** 允许的用户列表，为空表示允许所有人 */
     allowFrom?: Array<string | number>;
 };
@@ -21,6 +23,11 @@ export type WecomNetworkConfig = {
     timeoutMs?: number;
     retries?: number;
     retryDelayMs?: number;
+    /**
+     * 出口代理（用于企业可信 IP 固定出口场景）。
+     * 示例: "http://proxy.company.local:3128"
+     */
+    egressProxyUrl?: string;
 };
 
 /**

@@ -33,10 +33,8 @@ export const wecomOutbound: ChannelOutboundAdapter = {
       return [text];
     }
   },
-  sendText: async ({ cfg, to, text, signal }: ChannelOutboundContext) => {
-    if (signal?.aborted) {
-      throw new Error("Outbound delivery aborted");
-    }
+  sendText: async ({ cfg, to, text }: ChannelOutboundContext) => {
+    // signal removed - not supported in current SDK
 
     const agent = resolveAgentConfigOrThrow(cfg);
     const targetId = normalizeWecomOutboundTarget(to);
@@ -45,12 +43,20 @@ export const wecomOutbound: ChannelOutboundAdapter = {
     }
 
     const isChat = /^(wr|wc)/i.test(targetId);
-    await sendAgentText({
-      agent,
-      toUser: isChat ? undefined : targetId,
-      chatId: isChat ? targetId : undefined,
-      text,
-    });
+    console.log(`[wecom-outbound] Sending text to ${targetId} (isChat=${isChat}, len=${text.length})`);
+
+    try {
+      await sendAgentText({
+        agent,
+        toUser: isChat ? undefined : targetId,
+        chatId: isChat ? targetId : undefined,
+        text,
+      });
+      console.log(`[wecom-outbound] Successfully sent text to ${targetId}`);
+    } catch (err) {
+      console.error(`[wecom-outbound] Failed to send text to ${targetId}:`, err);
+      throw err;
+    }
 
     return {
       channel: "wecom",
@@ -58,10 +64,8 @@ export const wecomOutbound: ChannelOutboundAdapter = {
       timestamp: Date.now(),
     };
   },
-  sendMedia: async ({ cfg, to, text, mediaUrl, signal }: ChannelOutboundContext) => {
-    if (signal?.aborted) {
-      throw new Error("Outbound delivery aborted");
-    }
+  sendMedia: async ({ cfg, to, text, mediaUrl }: ChannelOutboundContext) => {
+    // signal removed - not supported in current SDK
 
     const agent = resolveAgentConfigOrThrow(cfg);
     const targetId = normalizeWecomOutboundTarget(to);
@@ -122,19 +126,27 @@ export const wecomOutbound: ChannelOutboundAdapter = {
     });
 
     const isChat = /^(wr|wc)/i.test(targetId);
-    await sendAgentMedia({
-      agent,
-      toUser: isChat ? undefined : targetId,
-      chatId: isChat ? targetId : undefined,
-      mediaId,
-      mediaType,
-      ...(mediaType === "video" && text?.trim()
-        ? {
-          title: text.trim().slice(0, 64),
-          description: text.trim().slice(0, 512),
-        }
-        : {}),
-    });
+    console.log(`[wecom-outbound] Sending media (${mediaType}) to ${targetId} (isChat=${isChat}, mediaId=${mediaId})`);
+
+    try {
+      await sendAgentMedia({
+        agent,
+        toUser: isChat ? undefined : targetId,
+        chatId: isChat ? targetId : undefined,
+        mediaId,
+        mediaType,
+        ...(mediaType === "video" && text?.trim()
+          ? {
+            title: text.trim().slice(0, 64),
+            description: text.trim().slice(0, 512),
+          }
+          : {}),
+      });
+      console.log(`[wecom-outbound] Successfully sent media to ${targetId}`);
+    } catch (err) {
+      console.error(`[wecom-outbound] Failed to send media to ${targetId}:`, err);
+      throw err;
+    }
 
     return {
       channel: "wecom",

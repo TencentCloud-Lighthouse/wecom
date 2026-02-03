@@ -2,12 +2,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { handleWecomWebhookRequest, registerWecomWebhookTarget } from "./monitor.js";
 import { encryptWecomPlaintext, computeWecomMsgSignature, WECOM_PKCS7_BLOCK_SIZE } from "./crypto.js";
 import * as runtime from "./runtime.js";
-import axios from "axios";
 import crypto from "node:crypto";
 import { IncomingMessage, ServerResponse } from "node:http";
 import { Socket } from "node:net";
 
-vi.mock("axios");
+const { undiciFetch } = vi.hoisted(() => {
+    const undiciFetch = vi.fn();
+    return { undiciFetch };
+});
+
+vi.mock("undici", () => ({
+    fetch: undiciFetch,
+    ProxyAgent: class ProxyAgent { },
+}));
 
 // Helpers to simulate HTTP request
 function createMockRequest(bodyObj: any, query: URLSearchParams): IncomingMessage {
@@ -126,8 +133,8 @@ describe("Monitor Integration: Inbound Image", () => {
         cipher.setAutoPadding(false);
         const encryptedMedia = Buffer.concat([cipher.update(pkcs7Pad(fileContent, WECOM_PKCS7_BLOCK_SIZE)), cipher.final()]);
 
-        // Mock Axios to return this encrypted media
-        (axios.get as any).mockResolvedValue({ data: encryptedMedia, headers: { "content-length": "100" } });
+        // Mock HTTP fetch to return this encrypted media
+        undiciFetch.mockResolvedValue(new Response(encryptedMedia));
 
         // 2. Prepare Inbound Message (The Webhook JSON)
         const imageUrl = "http://wecom.server/media/123";
@@ -192,6 +199,9 @@ describe("Monitor Integration: Inbound Image", () => {
         expect(ctx.MediaPath).toBe("/tmp/saved-image.jpg");
         expect(ctx.MediaType).toBe("image/jpeg");
 
-        expect(axios.get).toHaveBeenCalledWith(imageUrl, expect.objectContaining({ responseType: "arraybuffer" }));
+        expect(undiciFetch).toHaveBeenCalledWith(
+            imageUrl,
+            expect.objectContaining({ signal: expect.anything() }),
+        );
     });
 });

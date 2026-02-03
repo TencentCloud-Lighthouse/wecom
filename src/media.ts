@@ -1,23 +1,39 @@
 import crypto from "node:crypto";
-import axios from "axios";
 import { decodeEncodingAESKey, pkcs7Unpad, WECOM_PKCS7_BLOCK_SIZE } from "./crypto.js";
+import { readResponseBodyAsBuffer, wecomFetch, type WecomHttpOptions } from "./http.js";
 
 /**
- * Download and decrypt WeCom media file (e.g. image).
+ * **decryptWecomMedia (解密企业微信媒体文件)**
  * 
- * WeCom media files are AES-256-CBC encrypted with the same EncodingAESKey.
- * The IV is the first 16 bytes of the AES Key.
- * The content is PKCS#7 padded.
+ * 简易封装：直接传入 URL 和 AES Key 下载并解密。
+ * 企业微信媒体文件使用与消息体相同的 AES-256-CBC 加密，IV 为 AES Key 前16字节。
+ * 解密后需移除 PKCS#7 填充。
  */
 export async function decryptWecomMedia(url: string, encodingAESKey: string, maxBytes?: number): Promise<Buffer> {
+    return decryptWecomMediaWithHttp(url, encodingAESKey, { maxBytes });
+}
+
+/**
+ * **decryptWecomMediaWithHttp (解密企业微信媒体 - 高级)**
+ * 
+ * 支持传递 HTTP 选项（如 Proxy、Timeout）。
+ * 流程：
+ * 1. 下载加密内容。
+ * 2. 准备 AES Key 和 IV。
+ * 3. AES-CBC 解密。
+ * 4. PKCS#7 去除填充。
+ */
+export async function decryptWecomMediaWithHttp(
+    url: string,
+    encodingAESKey: string,
+    params?: { maxBytes?: number; http?: WecomHttpOptions },
+): Promise<Buffer> {
     // 1. Download encrypted content
-    const response = await axios.get(url, {
-        responseType: "arraybuffer", // Important: get raw buffer
-        timeout: 15000,
-        maxContentLength: maxBytes || undefined, // Limit download size
-        maxBodyLength: maxBytes || undefined,
-    });
-    const encryptedData = Buffer.from(response.data);
+    const res = await wecomFetch(url, undefined, { ...params?.http, timeoutMs: params?.http?.timeoutMs ?? 15_000 });
+    if (!res.ok) {
+        throw new Error(`failed to download media: ${res.status}`);
+    }
+    const encryptedData = await readResponseBodyAsBuffer(res, params?.maxBytes);
 
     // 2. Prepare Key and IV
     const aesKey = decodeEncodingAESKey(encodingAESKey);
