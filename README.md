@@ -12,15 +12,10 @@
   <a href="#联系我">联系我</a>
 </p>
 
-<p align="center">
-  🤝 与腾讯云团队共建维护 / Co-built with Tencent Cloud contributors
-</p>
 
+## 🤝 共创说明
 
-## 🤝 共建说明
-
-- 本项目由 **YanHaidao** 发起并持续维护。
-- 项目与 **Tencent Cloud contributors（腾讯云团队）** 共同建设，在云上部署适配、稳定性优化与文档完善方面长期协作。
+- 本项目由 [YanHaidao](https://github.com/YanHaidao) 与腾讯云团队共同共创维护，上游主线仓库：https://github.com/YanHaidao/wecom
 - 欢迎社区通过 Issue / Pull Request 参与共建。
 
 ---
@@ -369,15 +364,7 @@ openclaw cron rm <jobId>
 
 ---
 
-## 联系我
 
-微信交流群（扫码入群）：
-
-![企业微信交流群](https://openclaw.cc/wechat-openclaw-cn-qr.jpg)
-
-维护者：YanHaidao（VX：YanHaidao）
-
----
 
 ## 更新日志
 
